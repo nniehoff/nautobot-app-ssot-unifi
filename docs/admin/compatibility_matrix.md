@@ -6,4 +6,4 @@
 | Nautobot SSoT UniFi Version | Nautobot First Support Version | Nautobot Last Support Version |
 | ------------- | -------------------- | ------------- |
 | 1.0.X         | 2.0.0                | 2.99.99        |
-| 2.0.X         | 2.4.0                | 3.99.99        |
+| 2.0.X         | 2.4.22               | 3.99.99        |
