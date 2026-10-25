@@ -1,5 +1,10 @@
 """Storage of data that will not change throughout the life cycle of the application."""
 
+# Value of the system_of_record custom field on objects this app manages. The
+# Nautobot adapter loads only Devices carrying it, so a sync never compares
+# against, or deletes, Devices that came from somewhere else.
+SYSTEM_OF_RECORD = "UniFi SSoT"
+
 # pulled from https://ubntwiki.com/products/software/unifi-controller/api
 DEVICETYPE_MAP = {
     "BZ2": "Access Point",

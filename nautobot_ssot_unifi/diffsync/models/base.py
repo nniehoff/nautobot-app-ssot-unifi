@@ -3,10 +3,12 @@
 from typing import Annotated, List, Optional
 
 from diffsync.enum import DiffSyncModelFlags
-from nautobot.dcim.models import Device, DeviceType, Interface, Location, LocationType, Manufacturer
+from nautobot.dcim.models import Device, DeviceType, Location, LocationType, Manufacturer
 from nautobot.extras.models import Role
 from nautobot_ssot.contrib import CustomFieldAnnotation, NautobotModel
 from typing_extensions import TypedDict
+
+from nautobot_ssot_unifi.constants import SYSTEM_OF_RECORD
 
 
 class ContentTypeDict(TypedDict):
@@ -18,6 +20,10 @@ class ContentTypeDict(TypedDict):
 
 class LocationTypeModel(NautobotModel):
     """DiffSync model for UniFi locations."""
+
+    # Shared with other Systems of Record: create what UniFi needs, never
+    # delete what UniFi does not know about.
+    model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
 
     _model = LocationType
     _modelname = "locationtype"
@@ -31,6 +37,10 @@ class LocationTypeModel(NautobotModel):
 
 class LocationModel(NautobotModel):
     """DiffSync model for UniFi locations."""
+
+    # Shared with other Systems of Record: create what UniFi needs, never
+    # delete what UniFi does not know about.
+    model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
 
     _model = Location
     _modelname = "location"
@@ -46,6 +56,10 @@ class LocationModel(NautobotModel):
 class ManufacturerModel(NautobotModel):
     """DiffSync model for UniFi client vendors."""
 
+    # Shared with other Systems of Record: create what UniFi needs, never
+    # delete what UniFi does not know about.
+    model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
+
     _model = Manufacturer
     _modelname = "manufacturer"
     _identifiers = ("name",)
@@ -57,6 +71,10 @@ class ManufacturerModel(NautobotModel):
 
 class DeviceTypeModel(NautobotModel):
     """DiffSync model for UniFi device hardware."""
+
+    # Shared with other Systems of Record: create what UniFi needs, never
+    # delete what UniFi does not know about.
+    model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
 
     _model = DeviceType
     _modelname = "devicetype"
@@ -109,19 +127,10 @@ class DeviceModel(NautobotModel):
     device_type__manufacturer__name: Optional[str] = None
     status__name: str
 
-    system_of_record: Annotated[str, CustomFieldAnnotation(name="system_of_record")]
-    ssot_last_synchronized: Annotated[str, CustomFieldAnnotation(name="ssot_last_synchronized")]
+    system_of_record: Annotated[Optional[str], CustomFieldAnnotation(name="system_of_record")] = None
+    ssot_last_synchronized: Annotated[Optional[str], CustomFieldAnnotation(name="ssot_last_synchronized")] = None
 
-
-class InterfaceModel(NautobotModel):
-    """DiffSync model for UniFi device interfaces."""
-
-    _model = Interface
-    _modelname = "interface"
-    _identifiers = ("name",)
-    _attributes = ("type", "mgmt_only")
-    _children = {}
-
-    name: str
-    type: str
-    mgmt_only: bool
+    @classmethod
+    def _get_queryset(cls):
+        """Load only the Devices this app manages, so a sync never deletes Devices from other sources."""
+        return super()._get_queryset().filter(_custom_field_data__system_of_record=SYSTEM_OF_RECORD)

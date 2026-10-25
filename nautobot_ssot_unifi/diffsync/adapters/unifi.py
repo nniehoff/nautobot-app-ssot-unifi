@@ -5,11 +5,10 @@ from datetime import datetime
 from diffsync import Adapter
 from pyunifi.controller import Controller
 
-from nautobot_ssot_unifi.constants import DEVICETYPE_MAP
+from nautobot_ssot_unifi.constants import DEVICETYPE_MAP, SYSTEM_OF_RECORD
 from nautobot_ssot_unifi.diffsync.models.unifi import (
     UniFiDeviceModel,
     UniFiDeviceTypeModel,
-    UniFiInterfaceModel,
     UniFiLocationModel,
     UniFiLocationTypeModel,
     UniFiManufacturerModel,
@@ -27,9 +26,8 @@ class UniFiAdapter(Adapter):
     devicetype = UniFiDeviceTypeModel
     role = UniFiRoleModel
     device = UniFiDeviceModel
-    interface = UniFiInterfaceModel
 
-    top_level = ["locationtype", "location", "manufacturer", "devicetype", "role", "device", "interface"]
+    top_level = ["locationtype", "location", "manufacturer", "devicetype", "role", "device"]
 
     def __init__(self, *args, job=None, sync=None, client: Controller, **kwargs):
         """Initialize UniFi Controller.
@@ -88,7 +86,7 @@ class UniFiAdapter(Adapter):
                     "device_type__model": model,
                     "device_type__manufacturer__name": "Ubiquiti",
                     "status__name": "Active",
-                    "system_of_record": "UniFi SSoT",
+                    "system_of_record": SYSTEM_OF_RECORD,
                     "ssot_last_synchronized": datetime.today().date().isoformat(),
                 },
             )
@@ -115,7 +113,7 @@ class UniFiAdapter(Adapter):
                         "device_type__model": "Unknown Device",
                         "device_type__manufacturer__name": manu_name,
                         "status__name": "Active",
-                        "system_of_record": "UniFi SSoT",
+                        "system_of_record": SYSTEM_OF_RECORD,
                         "ssot_last_synchronized": datetime.today().date().isoformat(),
                     },
                 )

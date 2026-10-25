@@ -5,7 +5,6 @@ from nautobot_ssot.contrib import NautobotAdapter
 from nautobot_ssot_unifi.diffsync.models.base import (
     DeviceModel,
     DeviceTypeModel,
-    InterfaceModel,
     LocationModel,
     LocationTypeModel,
     ManufacturerModel,
@@ -22,6 +21,5 @@ class UniFiNautobotAdapter(NautobotAdapter):
     devicetype = DeviceTypeModel
     role = RoleModel
     device = DeviceModel
-    interface = InterfaceModel
 
-    top_level = ["locationtype", "location", "manufacturer", "devicetype", "role", "device", "interface"]
+    top_level = ["locationtype", "location", "manufacturer", "devicetype", "role", "device"]

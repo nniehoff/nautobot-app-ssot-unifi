@@ -3,7 +3,6 @@
 from nautobot_ssot_unifi.diffsync.models.base import (
     DeviceModel,
     DeviceTypeModel,
-    InterfaceModel,
     LocationModel,
     LocationTypeModel,
     ManufacturerModel,
@@ -110,21 +109,4 @@ class UniFiDeviceModel(DeviceModel):
 
     def delete(self):
         """Delete Device in UniFi from UniFiDevice object."""
-        return self
-
-
-class UniFiInterfaceModel(InterfaceModel):
-    """UniFi implementation of Interface DiffSync model."""
-
-    @classmethod
-    def create(cls, adapter, ids, attrs):
-        """Create Interface in UniFi from UniFiInterfaceModel object."""
-        return super().create(adapter=adapter, ids=ids, attrs=attrs)
-
-    def update(self, attrs):
-        """Update Interface in UniFi from UniFiInterfaceModel object."""
-        return super().update(attrs)
-
-    def delete(self):
-        """Delete Interface in UniFi from UniFiInterfaceModel object."""
         return self
