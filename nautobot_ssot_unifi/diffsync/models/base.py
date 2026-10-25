@@ -9,6 +9,7 @@ from nautobot_ssot.contrib import CustomFieldAnnotation, NautobotModel
 from typing_extensions import TypedDict
 
 from nautobot_ssot_unifi.constants import SYSTEM_OF_RECORD
+from nautobot_ssot_unifi.utils.unifi import get_controller_name
 
 
 class ContentTypeDict(TypedDict):
@@ -116,6 +117,7 @@ class DeviceModel(NautobotModel):
         "status__name",
         "system_of_record",
         "ssot_last_synchronized",
+        "unifi_controller",
     )
     _children = {}
 
@@ -129,8 +131,20 @@ class DeviceModel(NautobotModel):
 
     system_of_record: Annotated[Optional[str], CustomFieldAnnotation(name="system_of_record")] = None
     ssot_last_synchronized: Annotated[Optional[str], CustomFieldAnnotation(name="ssot_last_synchronized")] = None
+    unifi_controller: Annotated[Optional[str], CustomFieldAnnotation(name="unifi_controller")] = None
 
     @classmethod
     def _get_queryset(cls):
-        """Load only the Devices this app manages, so a sync never deletes Devices from other sources."""
-        return super()._get_queryset().filter(_custom_field_data__system_of_record=SYSTEM_OF_RECORD)
+        """Load only Devices synced from this controller, so a sync never deletes Devices from other sources.
+
+        Filtering on the controller as well as the System of Record keeps one controller's sync from
+        deleting Devices that another UniFi controller manages.
+        """
+        return (
+            super()
+            ._get_queryset()
+            .filter(
+                _custom_field_data__system_of_record=SYSTEM_OF_RECORD,
+                _custom_field_data__unifi_controller=get_controller_name(),
+            )
+        )

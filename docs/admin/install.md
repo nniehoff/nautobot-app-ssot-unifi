@@ -53,6 +53,7 @@ PLUGINS_CONFIG = {
         "hide_example_jobs": True,
     },
     "nautobot_ssot_unifi": {
+        "controller_name": os.getenv("UNIFI_CONTROLLER_NAME", ""),
         "unifi_host": os.getenv("UNIFI_HOST", ""),
         "unifi_password": os.getenv("UNIFI_PASSWORD", ""),
         "unifi_port": int(os.getenv("UNIFI_PORT", "8443")),
@@ -85,6 +86,7 @@ The app behavior can be controlled with the following list of settings:
 
 | Key              | Example              | Default | Description                                                   |
 | ---------------- | -------------------- | ------- | ------------------------------------------------------------- |
+| `controller_name` | `"home"`            | `unifi_host` | Name stored in each synced Device's UniFi Controller custom field. A sync only updates or deletes Devices with this controller's name, so several controllers can sync into one Nautobot. Set it to keep the name stable if the controller's address changes. |
 | `unifi_host`     | `"unifi.example.com"` | N/A     | Hostname or IP address of the UniFi Network controller.      |
 | `unifi_password` | `"changeme"`         | N/A     | Password for the UniFi controller user.                       |
 | `unifi_port`     | `8443`               | N/A     | Port of the UniFi controller API. Use `443` for UniFi OS consoles. |

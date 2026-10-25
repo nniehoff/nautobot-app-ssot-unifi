@@ -22,6 +22,18 @@ def connect_controller():
     )
 
 
+def get_controller_name() -> str:
+    """Name of the configured UniFi controller, stored on every Device synced from it.
+
+    Defaults to `unifi_host`. Set `controller_name` to keep the same name when the
+    controller moves to a new address, so its Devices are not orphaned.
+
+    Returns:
+        str: Controller name.
+    """
+    return PLUGIN_CFG.get("controller_name") or PLUGIN_CFG["unifi_host"]
+
+
 def get_sites(conn: Controller) -> dict:
     """Gather location information from UniFi.
 

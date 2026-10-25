@@ -131,6 +131,7 @@ PLUGINS_CONFIG = {
         "hide_example_jobs": True,
     },
     "nautobot_ssot_unifi": {
+        "controller_name": os.getenv("UNIFI_CONTROLLER_NAME", ""),
         "import_clients": is_truthy(os.getenv("UNIFI_IMPORT_CLIENTS", "false")),
         "unifi_host": os.getenv("UNIFI_HOST", ""),
         "unifi_password": os.getenv("UNIFI_PASSWORD", ""),

@@ -4,7 +4,7 @@ from nautobot.extras.choices import CustomFieldTypeChoices
 
 
 def nautobot_database_ready_callback(sender, *, apps, **kwargs):  # pylint: disable=unused-argument
-    """Add System of Record and Last Sync'd CustomFields to Device, Interface, and IPAddress.
+    """Add System of Record and Last Sync'd CustomFields to Device, Interface, and IPAddress, and UniFi Controller to Device.
 
     Callback function triggered by the nautobot_database_ready signal when the Nautobot database is fully ready.
     """
@@ -30,3 +30,12 @@ def nautobot_database_ready_callback(sender, *, apps, **kwargs):  # pylint: disa
     for model in [Device, Interface, IPAddress]:
         sor_custom_field.content_types.add(ContentType.objects.get_for_model(model))
         sync_custom_field.content_types.add(ContentType.objects.get_for_model(model))
+    controller_cf_dict = {
+        "type": CustomFieldTypeChoices.TYPE_TEXT,
+        "key": "unifi_controller",
+        "label": "UniFi Controller",
+    }
+    controller_custom_field, _ = CustomField.objects.update_or_create(
+        key=controller_cf_dict["key"], defaults=controller_cf_dict
+    )
+    controller_custom_field.content_types.add(ContentType.objects.get_for_model(Device))

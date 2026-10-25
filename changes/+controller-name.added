@@ -1,0 +1,1 @@
+Added the UniFi Controller custom field on Devices and the optional `controller_name` setting (default: `unifi_host`), so syncs from several UniFi controllers into one Nautobot do not delete each other's Devices.

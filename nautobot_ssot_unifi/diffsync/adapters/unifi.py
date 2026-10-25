@@ -14,7 +14,7 @@ from nautobot_ssot_unifi.diffsync.models.unifi import (
     UniFiManufacturerModel,
     UniFiRoleModel,
 )
-from nautobot_ssot_unifi.utils.unifi import get_sites
+from nautobot_ssot_unifi.utils.unifi import get_controller_name, get_sites
 
 
 class UniFiAdapter(Adapter):
@@ -45,6 +45,7 @@ class UniFiAdapter(Adapter):
         self.conn = client
 
         self.site_map = {}
+        self.controller_name = get_controller_name()
 
     def load_sites(self):
         """Load Sites from UniFi as Locations."""
@@ -88,6 +89,7 @@ class UniFiAdapter(Adapter):
                     "status__name": "Active",
                     "system_of_record": SYSTEM_OF_RECORD,
                     "ssot_last_synchronized": datetime.today().date().isoformat(),
+                    "unifi_controller": self.controller_name,
                 },
             )
             self.get_or_instantiate(
@@ -115,6 +117,7 @@ class UniFiAdapter(Adapter):
                         "status__name": "Active",
                         "system_of_record": SYSTEM_OF_RECORD,
                         "ssot_last_synchronized": datetime.today().date().isoformat(),
+                        "unifi_controller": self.controller_name,
                     },
                 )
                 self.get_or_instantiate(
