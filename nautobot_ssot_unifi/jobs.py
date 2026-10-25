@@ -1,12 +1,11 @@
 """Jobs for UniFi SSoT integration."""
 
-from nautobot.core.celery import register_jobs
-from nautobot.extras.jobs import BooleanVar
+from nautobot.apps.jobs import BooleanVar, register_jobs
 from nautobot_ssot.jobs.base import DataSource, DataTarget
+
 from nautobot_ssot_unifi.diffsync.adapters.nautobot import UniFiNautobotAdapter
 from nautobot_ssot_unifi.diffsync.adapters.unifi import UniFiAdapter
 from nautobot_ssot_unifi.utils.unifi import connect_controller
-
 
 name = "UniFi SSoT"  # pylint: disable=invalid-name
 
@@ -45,14 +44,10 @@ class UniFiDataSource(DataSource):
         self.target_adapter = UniFiNautobotAdapter(job=self, sync=self.sync)
         self.target_adapter.load()
 
-    def run(  # pylint: disable=arguments-differ, too-many-arguments
-        self, dryrun, memory_profiling, debug, *args, **kwargs
-    ):
+    def run(self, *args, **kwargs):
         """Perform data synchronization."""
-        self.debug = debug
-        self.dryrun = dryrun
-        self.memory_profiling = memory_profiling
-        super().run(dryrun=self.dryrun, memory_profiling=self.memory_profiling, *args, **kwargs)
+        self.debug = kwargs.pop("debug", False)
+        super().run(*args, **kwargs)
 
 
 class UniFiDataTarget(DataTarget):
@@ -89,14 +84,10 @@ class UniFiDataTarget(DataTarget):
         self.target_adapter = UniFiAdapter(job=self, sync=self.sync, client=conn)
         self.target_adapter.load()
 
-    def run(  # pylint: disable=arguments-differ, too-many-arguments
-        self, dryrun, memory_profiling, debug, *args, **kwargs
-    ):
+    def run(self, *args, **kwargs):
         """Perform data synchronization."""
-        self.debug = debug
-        self.dryrun = dryrun
-        self.memory_profiling = memory_profiling
-        super().run(dryrun=self.dryrun, memory_profiling=self.memory_profiling, *args, **kwargs)
+        self.debug = kwargs.pop("debug", False)
+        super().run(*args, **kwargs)
 
 
 jobs = [UniFiDataSource, UniFiDataTarget]

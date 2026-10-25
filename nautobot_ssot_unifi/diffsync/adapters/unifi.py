@@ -1,21 +1,24 @@
 """Nautobot Adapter for UniFi SSoT plugin."""
+
 from datetime import datetime
-from diffsync import DiffSync
+
+from diffsync import Adapter
 from pyunifi.controller import Controller
+
 from nautobot_ssot_unifi.constants import DEVICETYPE_MAP
 from nautobot_ssot_unifi.diffsync.models.unifi import (
-    UniFiLocationTypeModel,
-    UniFiLocationModel,
-    UniFiManufacturerModel,
-    UniFiRoleModel,
     UniFiDeviceModel,
     UniFiDeviceTypeModel,
     UniFiInterfaceModel,
+    UniFiLocationModel,
+    UniFiLocationTypeModel,
+    UniFiManufacturerModel,
+    UniFiRoleModel,
 )
 from nautobot_ssot_unifi.utils.unifi import get_sites
 
 
-class UniFiAdapter(DiffSync):
+class UniFiAdapter(Adapter):
     """DiffSync adapter for UniFi."""
 
     locationtype = UniFiLocationTypeModel
@@ -32,9 +35,11 @@ class UniFiAdapter(DiffSync):
         """Initialize UniFi Controller.
 
         Args:
+            *args: Positional arguments passed to the DiffSync Adapter.
             job (object, optional): UniFi Job. Defaults to None.
             sync (object, optional): UniFi DiffSync. Defaults to None.
             client (Controller): UniFi API client connection object.
+            **kwargs: Keyword arguments passed to the DiffSync Adapter.
         """
         super().__init__(*args, **kwargs)
         self.job = job

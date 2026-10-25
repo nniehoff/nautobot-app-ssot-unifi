@@ -3,8 +3,9 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from nautobot.extras.models import JobResult
 from nautobot.core.testing import TransactionTestCase
+from nautobot.extras.models import JobResult
+
 from nautobot_ssot_unifi.diffsync.adapters.unifi import UniFiAdapter
 from nautobot_ssot_unifi.jobs import UniFiDataSource
 

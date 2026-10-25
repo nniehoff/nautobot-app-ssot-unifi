@@ -1,14 +1,15 @@
 """Nautobot Adapter for Unifi SSoT plugin."""
 
 from nautobot_ssot.contrib import NautobotAdapter
+
 from nautobot_ssot_unifi.diffsync.models.base import (
-    LocationTypeModel,
-    LocationModel,
-    ManufacturerModel,
-    DeviceTypeModel,
-    RoleModel,
     DeviceModel,
+    DeviceTypeModel,
     InterfaceModel,
+    LocationModel,
+    LocationTypeModel,
+    ManufacturerModel,
+    RoleModel,
 )
 
 

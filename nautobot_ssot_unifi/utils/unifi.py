@@ -1,6 +1,6 @@
 """Utility functions for working with UniFi."""
-from django.conf import settings
 
+from django.conf import settings
 from pyunifi.controller import Controller
 
 PLUGIN_CFG = settings.PLUGINS_CONFIG["nautobot_ssot_unifi"]
@@ -17,6 +17,7 @@ def connect_controller():
         username=PLUGIN_CFG["unifi_user"],
         password=PLUGIN_CFG["unifi_password"],
         port=PLUGIN_CFG["unifi_port"],
+        version=PLUGIN_CFG.get("unifi_version", "v5"),
         ssl_verify=PLUGIN_CFG["verify"],
     )
 
