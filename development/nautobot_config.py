@@ -136,6 +136,7 @@ PLUGINS_CONFIG = {
         "unifi_password": os.getenv("UNIFI_PASSWORD", ""),
         "unifi_port": int(os.getenv("UNIFI_PORT", "8443")),
         "unifi_user": os.getenv("UNIFI_USER", ""),
+        "unifi_version": os.getenv("UNIFI_VERSION", "v5"),
         "verify": is_truthy(os.getenv("UNIFI_VERIFY", "false")),
     },
 }

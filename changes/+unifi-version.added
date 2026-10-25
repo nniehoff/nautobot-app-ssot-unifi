@@ -1,0 +1,1 @@
+Added the optional `unifi_version` setting so the app can connect to UniFi OS consoles and UniFi OS Server (`"UDMP-unifiOS"`).

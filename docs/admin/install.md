@@ -57,6 +57,7 @@ PLUGINS_CONFIG = {
         "unifi_password": os.getenv("UNIFI_PASSWORD", ""),
         "unifi_port": int(os.getenv("UNIFI_PORT", "8443")),
         "unifi_user": os.getenv("UNIFI_USER", ""),
+        "unifi_version": os.getenv("UNIFI_VERSION", "v5"),
         "verify": is_truthy(os.getenv("UNIFI_VERIFY", "true")),
     },
 }
@@ -88,4 +89,5 @@ The app behavior can be controlled with the following list of settings:
 | `unifi_password` | `"changeme"`         | N/A     | Password for the UniFi controller user.                       |
 | `unifi_port`     | `8443`               | N/A     | Port of the UniFi controller API. Use `443` for UniFi OS consoles. |
 | `unifi_user`     | `"nautobot"`         | N/A     | Username for authenticating to the UniFi controller.          |
+| `unifi_version`  | `"UDMP-unifiOS"`     | `"v5"`  | Controller API flavor passed to pyunifi. Use `"UDMP-unifiOS"` for UniFi OS consoles and UniFi OS Server, `"v5"` for a standalone Network application. |
 | `verify`         | `True`               | N/A     | Whether to verify the controller's TLS certificate.           |
