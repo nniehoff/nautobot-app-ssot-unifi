@@ -1,9 +1,10 @@
 """Signals triggered when Nautobot starts to perform certain actions."""
+
 from nautobot.extras.choices import CustomFieldTypeChoices
 
 
 def nautobot_database_ready_callback(sender, *, apps, **kwargs):  # pylint: disable=unused-argument
-    """Ensure the Citrix Manufacturer is in place for DeviceTypes to use. Adds OS Version CustomField to Devices and System of Record and Last Sync'd to Site, Device, Interface, and IPAddress.
+    """Add System of Record and Last Sync'd CustomFields to Device, Interface, and IPAddress.
 
     Callback function triggered by the nautobot_database_ready signal when the Nautobot database is fully ready.
     """

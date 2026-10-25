@@ -1,14 +1,12 @@
 """DiffSyncModel subclasses for Nautobot-to-UniFi data sync."""
-try:
-    from typing import Annotated  # Python>=3.9
-except ImportError:
-    from typing_extensions import Annotated  # Python<3.9
-from typing import Optional, List
-from typing_extensions import TypedDict
+
+from typing import Annotated, List, Optional
+
 from diffsync.enum import DiffSyncModelFlags
-from nautobot_ssot.contrib import NautobotModel, CustomFieldAnnotation
 from nautobot.dcim.models import Device, DeviceType, Interface, Location, LocationType, Manufacturer
 from nautobot.extras.models import Role
+from nautobot_ssot.contrib import CustomFieldAnnotation, NautobotModel
+from typing_extensions import TypedDict
 
 
 class ContentTypeDict(TypedDict):
@@ -73,7 +71,7 @@ class DeviceTypeModel(NautobotModel):
 class RoleModel(NautobotModel):
     """DiffSync model for UniFi device roles."""
 
-    model_flags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
+    model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
 
     _model = Role
     _modelname = "role"
@@ -105,10 +103,10 @@ class DeviceModel(NautobotModel):
 
     name: str
     location__name: str
-    serial: Optional[str]
-    role__name: Optional[str]
-    device_type__model: Optional[str]
-    device_type__manufacturer__name: Optional[str]
+    serial: Optional[str] = None
+    role__name: Optional[str] = None
+    device_type__model: Optional[str] = None
+    device_type__manufacturer__name: Optional[str] = None
     status__name: str
 
     system_of_record: Annotated[str, CustomFieldAnnotation(name="system_of_record")]

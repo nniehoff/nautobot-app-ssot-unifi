@@ -1,13 +1,13 @@
 """DiffSync models for Nautobot SSoT UniFi."""
 
 from nautobot_ssot_unifi.diffsync.models.base import (
-    LocationTypeModel,
+    DeviceModel,
+    DeviceTypeModel,
+    InterfaceModel,
     LocationModel,
+    LocationTypeModel,
     ManufacturerModel,
     RoleModel,
-    DeviceTypeModel,
-    DeviceModel,
-    InterfaceModel,
 )
 
 
@@ -15,9 +15,9 @@ class UniFiLocationTypeModel(LocationTypeModel):
     """UniFi implementation of LocationType DiffSync model."""
 
     @classmethod
-    def create(cls, diffsync, ids, attrs):
+    def create(cls, adapter, ids, attrs):
         """Create LocationType in UniFi from UniFiLocationTypeModel object."""
-        return super().create(diffsync=diffsync, ids=ids, attrs=attrs)
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
 
     def update(self, attrs):
         """Update LocationType in UniFi from UniFiLocationTypeModel object."""
@@ -32,9 +32,9 @@ class UniFiLocationModel(LocationModel):
     """UniFi implementation of Location DiffSync model."""
 
     @classmethod
-    def create(cls, diffsync, ids, attrs):
+    def create(cls, adapter, ids, attrs):
         """Create Location in UniFi from UniFiLocationModel object."""
-        return super().create(diffsync=diffsync, ids=ids, attrs=attrs)
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
 
     def update(self, attrs):
         """Update Location in UniFi from UniFiLocationModel object."""
@@ -49,9 +49,9 @@ class UniFiManufacturerModel(ManufacturerModel):
     """UniFi implementation of Manufacturer DiffSync model."""
 
     @classmethod
-    def create(cls, diffsync, ids, attrs):
+    def create(cls, adapter, ids, attrs):
         """Create Manufacturer in UniFi from UniFiManufacturerModel object."""
-        return super().create(diffsync=diffsync, ids=ids, attrs=attrs)
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
 
     def update(self, attrs):
         """Update Manufacturer in UniFi from UniFiManufacturerModel object."""
@@ -63,12 +63,12 @@ class UniFiManufacturerModel(ManufacturerModel):
 
 
 class UniFiDeviceTypeModel(DeviceTypeModel):
-    """UniFi implementation of Manufacturer DiffSync model."""
+    """UniFi implementation of DeviceType DiffSync model."""
 
     @classmethod
-    def create(cls, diffsync, ids, attrs):
+    def create(cls, adapter, ids, attrs):
         """Create DeviceType in UniFi from UniFiDeviceTypeModel object."""
-        return super().create(diffsync=diffsync, ids=ids, attrs=attrs)
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
 
     def update(self, attrs):
         """Update DeviceType in UniFi from UniFiDeviceTypeModel object."""
@@ -80,12 +80,12 @@ class UniFiDeviceTypeModel(DeviceTypeModel):
 
 
 class UniFiRoleModel(RoleModel):
-    """UniFi implementation of Manufacturer DiffSync model."""
+    """UniFi implementation of Role DiffSync model."""
 
     @classmethod
-    def create(cls, diffsync, ids, attrs):
+    def create(cls, adapter, ids, attrs):
         """Create Role in UniFi from UniFiRoleModel object."""
-        return super().create(diffsync=diffsync, ids=ids, attrs=attrs)
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
 
     def update(self, attrs):
         """Update Role in UniFi from UniFiRoleModel object."""
@@ -97,12 +97,12 @@ class UniFiRoleModel(RoleModel):
 
 
 class UniFiDeviceModel(DeviceModel):
-    """UniFi implementation of Interface DiffSync model."""
+    """UniFi implementation of Device DiffSync model."""
 
     @classmethod
-    def create(cls, diffsync, ids, attrs):
+    def create(cls, adapter, ids, attrs):
         """Create Device in UniFi from UniFiDevice object."""
-        return super().create(diffsync=diffsync, ids=ids, attrs=attrs)
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
 
     def update(self, attrs):
         """Update Device in UniFi from UniFiDevice object."""
@@ -114,12 +114,12 @@ class UniFiDeviceModel(DeviceModel):
 
 
 class UniFiInterfaceModel(InterfaceModel):
-    """UniFi implementation of Device DiffSync model."""
+    """UniFi implementation of Interface DiffSync model."""
 
     @classmethod
-    def create(cls, diffsync, ids, attrs):
+    def create(cls, adapter, ids, attrs):
         """Create Interface in UniFi from UniFiInterfaceModel object."""
-        return super().create(diffsync=diffsync, ids=ids, attrs=attrs)
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
 
     def update(self, attrs):
         """Update Interface in UniFi from UniFiInterfaceModel object."""

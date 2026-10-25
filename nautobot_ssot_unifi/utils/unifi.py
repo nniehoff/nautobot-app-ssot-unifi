@@ -1,6 +1,6 @@
 """Utility functions for working with UniFi."""
-from django.conf import settings
 
+from django.conf import settings
 from pyunifi.controller import Controller
 
 PLUGIN_CFG = settings.PLUGINS_CONFIG["nautobot_ssot_unifi"]
