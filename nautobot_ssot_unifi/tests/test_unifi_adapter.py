@@ -68,3 +68,14 @@ class TestUniFiAdapterTestCase(TransactionTestCase):
         self.assertEqual(
             {dev["name"] for dev in AP_FIXTURE}, {dev.get_unique_id() for dev in self.unifi.get_all("device")}
         )
+
+    @patch("nautobot_ssot_unifi.diffsync.adapters.unifi.get_sites")
+    def test_load_reads_every_site(self, mock_get_sites):
+        """load() switches the client to each site's short name before reading its devices and clients."""
+        mock_get_sites.return_value = SITE_FIXTURE + [{"_id": "second-site-id", "name": "nbxeaqa6", "desc": "Second"}]
+        self.unifi_client.get_clients.return_value = []
+        seen_sites = []
+        self.unifi_client.get_aps.side_effect = lambda: seen_sites.append(self.unifi_client.site_id) or AP_FIXTURE
+        self.unifi.load()
+        self.assertEqual(["default", "nbxeaqa6"], seen_sites)
+        self.assertEqual(2, self.unifi_client.get_clients.call_count)

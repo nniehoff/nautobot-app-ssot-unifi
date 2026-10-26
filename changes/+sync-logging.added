@@ -1,0 +1,1 @@
+Added job log messages for the number of devices and clients found in each UniFi site, and per-object messages when `debug` is enabled.

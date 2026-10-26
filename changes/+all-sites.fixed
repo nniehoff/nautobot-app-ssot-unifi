@@ -1,0 +1,1 @@
+Fixed the UniFi adapter reading only the `default` site, which loaded no devices or clients from UniFi OS controllers whose sites have generated names.

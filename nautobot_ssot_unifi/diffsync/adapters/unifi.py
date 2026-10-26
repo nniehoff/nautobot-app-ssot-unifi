@@ -44,6 +44,7 @@ class UniFiAdapter(Adapter):
         self.sync = sync
         self.conn = client
 
+        self.sites = []
         self.site_map = {}
         self.controller_name = get_controller_name()
 
@@ -52,9 +53,11 @@ class UniFiAdapter(Adapter):
         self.get_or_instantiate(
             self.locationtype, ids={"name": "Site", "content_types": [{"app_label": "dcim", "model": "device"}]}
         )
-        locations = get_sites(conn=self.conn)
-        for site in locations:
+        self.sites = get_sites(conn=self.conn)
+        for site in self.sites:
             self.site_map[site["_id"]] = site["desc"]
+            if self.job.debug:
+                self.job.logger.debug("Loaded UniFi site %s (%s)", site["desc"], site["name"])
             self.get_or_instantiate(
                 self.location,
                 ids={"name": site["desc"], "location_type__name": "Site"},
@@ -72,9 +75,12 @@ class UniFiAdapter(Adapter):
     def load_unifi_devices(self):
         """Load Devices from UniFi as Devices."""
         aps = self.conn.get_aps()
+        self.job.logger.info("Found %s devices in UniFi site %s", len(aps), self.conn.site_id)
         for ap in aps:
             model = DEVICETYPE_MAP[ap["model"]] if DEVICETYPE_MAP.get(ap["model"]) else ap["model"]
             location = self.site_map[ap["site_id"]] if ap.get("site_id") else "Unknown"
+            if self.job.debug:
+                self.job.logger.debug("Loaded UniFi device %s (%s) in %s", ap["name"], model, location)
             self.load_manufacturer()
             self.load_devicetype(model)
             self.get_or_instantiate(
@@ -99,35 +105,42 @@ class UniFiAdapter(Adapter):
     def load_clients(self):
         """Load client devices from UniFi as Devices."""
         clients = self.conn.get_clients()
+        self.job.logger.info("Found %s clients in UniFi site %s", len(clients), self.conn.site_id)
         for client in clients:
-            if client.get("hostname") and client["hostname"] != "\x03":
-                site = self.site_map[client["site_id"]] if client.get("site_id") else "Unknown"
-                manu_name = client["oui"] if client.get("oui") else "Unknown"
-                self.load_manufacturer(manu_name=manu_name)
-                self.load_devicetype(model="Unknown Device", manu_name=manu_name)
-                self.get_or_instantiate(
-                    self.device,
-                    ids={"name": client["hostname"]},
-                    attrs={
-                        "location__name": site,
-                        "serial": "",
-                        "role__name": "Client",
-                        "device_type__model": "Unknown Device",
-                        "device_type__manufacturer__name": manu_name,
-                        "status__name": "Active",
-                        "system_of_record": SYSTEM_OF_RECORD,
-                        "ssot_last_synchronized": datetime.today().date().isoformat(),
-                        "unifi_controller": self.controller_name,
-                    },
-                )
-                self.get_or_instantiate(
-                    self.role,
-                    ids={"name": "Client"},
-                    attrs={"content_types": [{"app_label": "dcim", "model": "device"}]},
-                )
+            if not client.get("hostname") or client["hostname"] == "\x03":
+                if self.job.debug:
+                    self.job.logger.debug("Skipping UniFi client %s: no hostname", client.get("mac"))
+                continue
+            site = self.site_map[client["site_id"]] if client.get("site_id") else "Unknown"
+            manu_name = client["oui"] if client.get("oui") else "Unknown"
+            self.load_manufacturer(manu_name=manu_name)
+            self.load_devicetype(model="Unknown Device", manu_name=manu_name)
+            self.get_or_instantiate(
+                self.device,
+                ids={"name": client["hostname"]},
+                attrs={
+                    "location__name": site,
+                    "serial": "",
+                    "role__name": "Client",
+                    "device_type__model": "Unknown Device",
+                    "device_type__manufacturer__name": manu_name,
+                    "status__name": "Active",
+                    "system_of_record": SYSTEM_OF_RECORD,
+                    "ssot_last_synchronized": datetime.today().date().isoformat(),
+                    "unifi_controller": self.controller_name,
+                },
+            )
+            self.get_or_instantiate(
+                self.role,
+                ids={"name": "Client"},
+                attrs={"content_types": [{"app_label": "dcim", "model": "device"}]},
+            )
 
     def load(self):
         """Load data from UniFi into DiffSync models."""
         self.load_sites()
-        self.load_unifi_devices()
-        self.load_clients()
+        # pyunifi reads one site at a time, and UniFi OS names sites with random IDs rather than "default".
+        for site in self.sites:
+            self.conn.site_id = site["name"]
+            self.load_unifi_devices()
+            self.load_clients()
