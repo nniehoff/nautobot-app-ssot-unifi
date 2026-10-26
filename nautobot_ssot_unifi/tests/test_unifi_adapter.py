@@ -123,3 +123,35 @@ class TestUniFiAdapterTestCase(TransactionTestCase):
         self.unifi.load()
         self.assertEqual(["default", "nbxeaqa6"], seen_sites)
         self.assertEqual(2, self.unifi_client.get_clients.call_count)
+
+    @patch.dict(PLUGIN_CFG, {"exclude_client_uplinks": ["WAN Switch"], "exclude_client_networks": ["guest"]})
+    def test_client_skip_reason_exclude(self):
+        """Clients behind an excluded uplink (by name) or on an excluded network (any case) are skipped."""
+        self.unifi.uplink_names = {"8c:ed:e1:b0:19:f5": "WAN Switch", "f4:e2:c6:bf:5c:fd": "Office Switch"}
+        self.assertIn(
+            "exclude_client_uplinks",
+            self.unifi.client_skip_reason(
+                {"mac": "00:11:22:33:44:01", "is_wired": True, "sw_mac": "8C:ED:E1:B0:19:F5"}
+            ),
+        )
+        self.assertIn(
+            "exclude_client_networks",
+            self.unifi.client_skip_reason({"mac": "00:11:22:33:44:02", "is_wired": True, "network": "Guest"}),
+        )
+        self.assertIsNone(
+            self.unifi.client_skip_reason({"mac": "00:11:22:33:44:03", "is_wired": True, "sw_mac": "f4:e2:c6:bf:5c:fd"})
+        )
+
+    @patch.dict(PLUGIN_CFG, {"include_client_uplinks": ["f4:e2:c6:bf:5c:fd"]})
+    def test_client_skip_reason_include(self):
+        """With `include_client_uplinks` set, only clients behind a listed uplink (by MAC) are synced."""
+        self.unifi.uplink_names = {"f4:e2:c6:bf:5c:fd": "Office Switch"}
+        self.assertIsNone(
+            self.unifi.client_skip_reason({"mac": "00:11:22:33:44:01", "is_wired": True, "sw_mac": "f4:e2:c6:bf:5c:fd"})
+        )
+        self.assertIn(
+            "not in include_client_uplinks",
+            self.unifi.client_skip_reason(
+                {"mac": "00:11:22:33:44:02", "is_wired": False, "ap_mac": "60:22:32:fd:ac:92"}
+            ),
+        )

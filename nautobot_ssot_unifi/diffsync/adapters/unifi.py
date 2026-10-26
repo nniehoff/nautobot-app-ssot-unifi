@@ -2,6 +2,7 @@
 
 from collections import Counter
 from datetime import datetime
+from typing import Optional
 
 from diffsync import Adapter
 from pyunifi.controller import Controller
@@ -52,6 +53,8 @@ class UniFiAdapter(Adapter):
         self.conn = client
 
         self.sites = []
+        # MAC -> name of the UniFi devices in the site being read, to match clients' uplinks by name.
+        self.uplink_names = {}
         self.controller_name = get_controller_name()
 
     def load_sites(self):
@@ -92,6 +95,7 @@ class UniFiAdapter(Adapter):
         """
         aps = self.conn.get_aps()
         self.job.logger.info("Found %s devices in UniFi site %s", len(aps), site["desc"])
+        self.uplink_names = {ap["mac"].lower(): ap.get("name") or ap["mac"] for ap in aps}
         records = []
         for ap in aps:
             model = DEVICETYPE_MAP[ap["model"]] if DEVICETYPE_MAP.get(ap["model"]) else ap["model"]
@@ -108,12 +112,43 @@ class UniFiAdapter(Adapter):
             )
         return records
 
-    def get_clients(self, site: dict) -> list:
-        """Read the clients connected to a site, minus the ones the settings exclude.
+    def client_skip_reason(self, client: dict) -> Optional[str]:
+        """Why a client is left out of the sync, or None to sync it.
 
-        Wireless clients are skipped unless `import_wireless_clients` is set. Clients with a
-        randomized (locally administered) MAC are skipped unless they have an alias in UniFi,
-        because their MAC, which identifies them in Nautobot, can change at any time.
+        In order: wireless clients unless `import_wireless_clients` is set; clients whose uplink
+        (the switch or access point they connect through, by name or MAC) or network is not in
+        a non-empty `include_client_uplinks` / `include_client_networks`, or is in
+        `exclude_client_uplinks` / `exclude_client_networks`; and clients with a randomized
+        (locally administered) MAC and no alias in UniFi, because their MAC, which identifies
+        them in Nautobot, can change at any time.
+
+        Args:
+            client (dict): Client from the UniFi `stat/sta` endpoint.
+
+        Returns:
+            Optional[str]: Reason for the debug log, or None.
+        """
+        if not client.get("is_wired") and not PLUGIN_CFG.get("import_wireless_clients", True):
+            return "wireless"
+        uplink_mac = ((client.get("sw_mac") if client.get("is_wired") else client.get("ap_mac")) or "").lower()
+        uplink = {uplink_mac, self.uplink_names.get(uplink_mac)} - {"", None}
+        network = {client.get("network")} - {None}
+        for kind, raw_values in (("uplink", uplink), ("network", network)):
+            values = {value.lower() for value in raw_values}
+            include = {value.lower() for value in PLUGIN_CFG.get(f"include_client_{kind}s") or []}
+            exclude = {value.lower() for value in PLUGIN_CFG.get(f"exclude_client_{kind}s") or []}
+            if include and not values & include:
+                return f"{kind} {', '.join(sorted(values)) or 'unknown'} not in include_client_{kind}s"
+            if values & exclude:
+                return f"{kind} {', '.join(sorted(values))} in exclude_client_{kind}s"
+        if is_random_mac(client["mac"]) and not client.get("name"):
+            return "randomized MAC without an alias"
+        return None
+
+    def get_clients(self, site: dict) -> list:
+        """Read the clients connected to a site, minus the ones `client_skip_reason()` rejects.
+
+        Must run after `get_unifi_devices()` for the same site, which records the uplink names.
 
         Args:
             site (dict): Site the client is pointed at.
@@ -126,11 +161,7 @@ class UniFiAdapter(Adapter):
         clients = self.conn.get_clients()
         records = []
         for client in clients:
-            skip_reason = None
-            if not client.get("is_wired") and not PLUGIN_CFG.get("import_wireless_clients", True):
-                skip_reason = "wireless"
-            elif is_random_mac(client["mac"]) and not client.get("name"):
-                skip_reason = "randomized MAC without an alias"
+            skip_reason = self.client_skip_reason(client)
             if skip_reason:
                 if self.job.debug:
                     self.job.logger.debug("Skipping UniFi client %s: %s", client["mac"], skip_reason)
