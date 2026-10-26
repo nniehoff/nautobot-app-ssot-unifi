@@ -1,19 +1,33 @@
 """Jobs for UniFi SSoT integration."""
 
-from nautobot.apps.jobs import BooleanVar, register_jobs
+from nautobot.apps.jobs import BooleanVar, ChoiceVar, register_jobs
 from nautobot_ssot.jobs.base import DataSource, DataTarget
 
 from nautobot_ssot_unifi.diffsync.adapters.nautobot import UniFiNautobotAdapter
 from nautobot_ssot_unifi.diffsync.adapters.unifi import UniFiAdapter
-from nautobot_ssot_unifi.utils.unifi import connect_controller
+from nautobot_ssot_unifi.utils.nautobot import find_devices_by_mac, find_unsynced_location, is_synced_device
+from nautobot_ssot_unifi.utils.unifi import connect_controller, get_selected_sites
 
 name = "UniFi SSoT"  # pylint: disable=invalid-name
+
+EXISTING_DEVICE_CHOICES = (
+    ("skip", "Skip: leave them alone and log a warning"),
+    ("adopt", "Adopt: update them from UniFi from now on"),
+    ("create", "Create: add a separate Device from UniFi"),
+)
 
 
 class UniFiDataSource(DataSource):
     """UniFi SSoT Data Source."""
 
     debug = BooleanVar(description="Enable for more verbose debug logging", default=False)
+    existing_devices = ChoiceVar(
+        choices=EXISTING_DEVICE_CHOICES,
+        default="skip",
+        label="Existing devices",
+        description="What to do with Devices already in Nautobot, not synced from this controller, that have a "
+        "MAC address UniFi reports. Adopted Devices keep their Role, Device Type, and Status.",
+    )
 
     class Meta:  # pylint: disable=too-few-public-methods
         """Meta data for UniFi."""
@@ -40,13 +54,137 @@ class UniFiDataSource(DataSource):
         self.source_adapter.load()
 
     def load_target_adapter(self):
-        """Load data from Nautobot into DiffSync models."""
-        self.target_adapter = UniFiNautobotAdapter(job=self, sync=self.sync)
+        """Load data from Nautobot into DiffSync models.
+
+        Before loading, handle Locations and Devices that already exist in Nautobot but were not synced
+        from this controller. After loading, keep Nautobot's values for the fields the sync only sets on
+        create, and drop the shared objects nothing needs any more.
+        """
+        self.handle_existing_locations()
+        unifi_macs = {device.mac_address for device in self.source_adapter.get_all("device")}
+        adopt_pks = self.handle_existing_devices(unifi_macs)
+        self.target_adapter = UniFiNautobotAdapter(
+            job=self,
+            sync=self.sync,
+            unifi_macs=unifi_macs,
+            adopt_pks=adopt_pks,
+            sites=self.source_adapter.sites if get_selected_sites() else None,
+        )
         self.target_adapter.load()
+        self.source_adapter.keep_nautobot_fields(self.target_adapter)
+        self.source_adapter.prune_unused()
+
+    def handle_existing_locations(self):
+        """Use an existing Location named like a UniFi site instead of creating a second one.
+
+        The sync places the site's Devices in it, but never changes the Location itself.
+        """
+        for location in list(self.source_adapter.get_all("location")):
+            existing = find_unsynced_location(location.name, location.unifi_site)
+            if existing:
+                self.logger.warning(
+                    "Location %s already exists and was not synced from UniFi; placing site %s's Devices in it "
+                    "without changing the Location.",
+                    existing.name,
+                    location.unifi_site,
+                    extra={"object": existing},
+                )
+                self.source_adapter.remove(location)
+
+    def handle_existing_devices(self, unifi_macs) -> list:
+        """Apply the `existing_devices` choice to Devices that share a MAC with UniFi but are not synced from here.
+
+        Args:
+            unifi_macs (set): Lowercase MAC addresses UniFi reports.
+
+        Returns:
+            list: Primary keys of the Devices to adopt.
+        """
+        adopt_pks = []
+        for mac, devices in find_devices_by_mac(unifi_macs).items():
+            if any(is_synced_device(device) for device in devices):
+                continue
+            unifi_device = self.source_adapter.get("device", mac)
+            if len(devices) > 1:
+                self.logger.warning(
+                    "UniFi %s (%s) matches %s Devices in Nautobot (%s); skipping it until only one has this MAC.",
+                    unifi_device.name,
+                    mac,
+                    len(devices),
+                    ", ".join(sorted(str(device) for device in devices)),
+                )
+                self.source_adapter.remove(unifi_device)
+                continue
+            device = devices[0]
+            if self.existing_devices == "adopt":
+                self.logger.warning(
+                    "Adopting %s (%s) from UniFi %s: %s",
+                    device,
+                    mac,
+                    unifi_device.name,
+                    self.describe_adoption(device, unifi_device),
+                    extra={"object": device},
+                )
+                adopt_pks.append(device.pk)
+            elif self.existing_devices == "create":
+                self.logger.warning(
+                    "Creating UniFi %s (%s) as a new Device although %s has the same MAC.",
+                    unifi_device.name,
+                    mac,
+                    device,
+                    extra={"object": device},
+                )
+            else:
+                self.logger.warning(
+                    "Skipping UniFi %s (%s): %s has the same MAC and was not synced from UniFi. "
+                    "Run with Existing devices set to Adopt to take it over.",
+                    unifi_device.name,
+                    mac,
+                    device,
+                    extra={"object": device},
+                )
+                self.source_adapter.remove(unifi_device)
+        return adopt_pks
+
+    @staticmethod
+    def describe_adoption(device, unifi_device) -> str:
+        """Summarize what adopting a Device changes and what it keeps.
+
+        Args:
+            device (Device): The Nautobot Device being adopted.
+            unifi_device (DeviceModel): The matching UniFi device.
+
+        Returns:
+            str: Changed fields as "field: old -> new", then the kept fields that differ from UniFi.
+        """
+        changes = [
+            f"{field}: {old!r} -> {new!r}"
+            for field, old, new in (
+                ("name", device.name, unifi_device.name),
+                ("location", device.location.name, unifi_device.location__name),
+                ("serial", device.serial, unifi_device.serial or device.serial),
+            )
+            if old != new
+        ]
+        kept = [
+            f"{field} {old!r} (UniFi reports {new!r})"
+            for field, old, new in (
+                ("role", device.role.name, unifi_device.role__name),
+                ("device type", device.device_type.model, unifi_device.device_type__model),
+            )
+            if old != new
+        ]
+        return "; ".join(
+            [
+                "changes " + (", ".join(changes) if changes else "nothing"),
+                *(["keeps " + ", ".join(kept)] if kept else []),
+            ]
+        )
 
     def run(self, *args, **kwargs):
         """Perform data synchronization."""
         self.debug = kwargs.pop("debug", False)
+        self.existing_devices = kwargs.pop("existing_devices", "skip")
         super().run(*args, **kwargs)
 
 

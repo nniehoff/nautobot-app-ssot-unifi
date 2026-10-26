@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Optional
 
 from diffsync import Adapter
+from diffsync.exceptions import ObjectNotFound
 from pyunifi.controller import Controller
 
 from nautobot_ssot_unifi.constants import CLIENT_ROLE, DEVICETYPE_MAP, SYSTEM_OF_RECORD
@@ -233,3 +234,55 @@ class UniFiAdapter(Adapter):
             records.extend(self.get_unifi_devices(site))
             records.extend(self.get_clients(site))
         self.load_devices(records)
+
+    def keep_nautobot_fields(self, target: Adapter):
+        """Copy the fields the sync only sets on create from Nautobot over the UniFi values, so they never diff.
+
+        Applies to every Device and Location already in `target`: Role, Device Type, and Status of Devices,
+        serial when UniFi has none (clients), and Location Type and Status of Locations.
+
+        Args:
+            target (Adapter): Loaded Nautobot adapter.
+        """
+        for device in self.get_all(self.device):
+            try:
+                existing = target.get(self.device, device.get_unique_id())
+            except ObjectNotFound:
+                continue
+            device.role__name = existing.role__name
+            device.device_type__model = existing.device_type__model
+            device.device_type__manufacturer__name = existing.device_type__manufacturer__name
+            device.status__name = existing.status__name
+            if not device.serial:
+                device.serial = existing.serial
+        for location in self.get_all(self.location):
+            try:
+                existing = target.get(self.location, location.get_unique_id())
+            except ObjectNotFound:
+                continue
+            location.location_type__name = existing.location_type__name
+            location.status__name = existing.status__name
+
+    def prune_unused(self):
+        """Drop Roles, Device Types, Manufacturers, and Location Types no remaining Device or Location needs.
+
+        Devices left out of the sync, and the Nautobot values kept by `keep_nautobot_fields()`, leave
+        UniFi's versions of these unreferenced; without this the sync would create them for nothing.
+        """
+        devices = self.get_all(self.device)
+        roles = {device.role__name for device in devices}
+        device_types = {(device.device_type__model, device.device_type__manufacturer__name) for device in devices}
+        manufacturers = {manufacturer for _, manufacturer in device_types}
+        location_types = {location.location_type__name for location in self.get_all(self.location)}
+        for role in list(self.get_all(self.role)):
+            if role.name not in roles:
+                self.remove(role)
+        for device_type in list(self.get_all(self.devicetype)):
+            if (device_type.model, device_type.manufacturer__name) not in device_types:
+                self.remove(device_type)
+        for manufacturer in list(self.get_all(self.manufacturer)):
+            if manufacturer.name not in manufacturers:
+                self.remove(manufacturer)
+        for location_type in list(self.get_all(self.locationtype)):
+            if location_type.name not in location_types:
+                self.remove(location_type)

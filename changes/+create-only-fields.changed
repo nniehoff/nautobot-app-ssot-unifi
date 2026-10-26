@@ -1,0 +1,1 @@
+Changed Role, Device Type, and Status of Devices, and Location Type and Status of Locations, to be set only when the sync creates the object, and serial to be updated only when UniFi reports one, so corrections made in Nautobot are kept.

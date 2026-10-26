@@ -155,3 +155,37 @@ class TestUniFiAdapterTestCase(TransactionTestCase):
                 {"mac": "00:11:22:33:44:02", "is_wired": False, "ap_mac": "60:22:32:fd:ac:92"}
             ),
         )
+
+    def test_keep_nautobot_fields_and_prune(self):
+        """Devices already in Nautobot keep its Role, Device Type, Status, and serial; unused shared objects are dropped."""
+        self.unifi_client.get_clients.return_value = [{"mac": "00:11:22:33:44:01", "is_wired": True, "hostname": "nas"}]
+        self.unifi.load_devices(self.unifi.get_clients(SITE_FIXTURE[0]))
+        target = UniFiAdapter(job=self.job, sync=None, client=MagicMock())
+        target.add(
+            target.device(
+                mac_address="00:11:22:33:44:01",
+                name="nas",
+                location__name="Test",
+                serial="SN123",
+                role__name="Storage",
+                device_type__model="DS920+",
+                device_type__manufacturer__name="Synology",
+                status__name="Planned",
+            )
+        )
+        self.unifi.keep_nautobot_fields(target)
+        self.unifi.prune_unused()
+        device = self.unifi.get("device", "00:11:22:33:44:01")
+        self.assertEqual(
+            ("Storage", "DS920+", "Synology", "Planned", "SN123"),
+            (
+                device.role__name,
+                device.device_type__model,
+                device.device_type__manufacturer__name,
+                device.status__name,
+                device.serial,
+            ),
+        )
+        self.assertEqual([], self.unifi.get_all("role"))
+        self.assertEqual([], self.unifi.get_all("devicetype"))
+        self.assertEqual([], self.unifi.get_all("manufacturer"))

@@ -139,6 +139,10 @@ class DeviceModel(NautobotModel):
     Devices are identified by MAC address, so renaming one in UniFi renames it in Nautobot. Nautobot keeps
     MAC addresses on Interfaces: the sync creates one Interface per Device to hold it, and the Nautobot
     adapter reads `mac_address` back from the Device's Interfaces (see `get_device_mac()`).
+
+    Role, Device Type, and Status are only set when the sync creates a Device, and serial only when UniFi
+    reports one: `UniFiAdapter.keep_nautobot_fields()` copies the Nautobot values over UniFi's before the
+    diff, so corrections made in Nautobot are never reverted.
     """
 
     _model = Device
@@ -173,13 +177,14 @@ class DeviceModel(NautobotModel):
 
     @classmethod
     def _get_queryset(cls):
-        """Load only Devices synced from the selected sites of this controller.
+        """Load only Devices synced from this controller.
 
         A sync deletes every loaded Device that UniFi no longer reports, so this must never load
-        Devices from other Systems of Record, other UniFi controllers, or sites left out of `sites`.
-        Devices without a MAC address on any Interface cannot be matched and are left alone.
+        Devices from other Systems of Record or other UniFi controllers. Devices without a MAC
+        address on any Interface cannot be matched and are left alone. UniFiNautobotAdapter
+        narrows this to the selected sites and adds adopted Devices.
         """
-        queryset = (
+        return (
             super()
             ._get_queryset()
             .filter(
@@ -189,12 +194,6 @@ class DeviceModel(NautobotModel):
             )
             .prefetch_related("interfaces")
         )
-        selected = get_selected_sites()
-        if selected:
-            queryset = queryset.filter(
-                Q(location___custom_field_data__unifi_site__in=selected) | Q(location__name__in=selected)
-            )
-        return queryset
 
     @classmethod
     def create(cls, adapter, ids, attrs):
@@ -222,17 +221,19 @@ class DeviceModel(NautobotModel):
         return super(NautobotModel, cls).create(adapter, ids, attrs)
 
 
-def get_device_mac(device: Device) -> Optional[str]:
-    """MAC address identifying a Device: management Interfaces first, then by name.
+def get_device_mac(device: Device, preferred: frozenset = frozenset()) -> Optional[str]:
+    """MAC address identifying a Device: one UniFi reports, else management Interfaces first, then by name.
+
+    Preferring a MAC UniFi reports matters for Devices with several MAC addresses, such as a switch whose
+    ports all have one: matching on another MAC would leave the Device unmatched, and the sync would delete it.
 
     Args:
         device (Device): Device with its `interfaces` prefetched.
+        preferred (frozenset): Lowercase MAC addresses UniFi reports.
 
     Returns:
         Optional[str]: Lowercase MAC address, as UniFi reports it, or None if no Interface has one.
     """
     interfaces = sorted(device.interfaces.all(), key=lambda interface: (not interface.mgmt_only, interface.name))
-    for interface in interfaces:
-        if interface.mac_address:
-            return str(interface.mac_address).lower()
-    return None
+    macs = [str(interface.mac_address).lower() for interface in interfaces if interface.mac_address]
+    return next((mac for mac in macs if mac in preferred), macs[0] if macs else None)
