@@ -54,6 +54,9 @@ PLUGINS_CONFIG = {
     },
     "nautobot_ssot_unifi": {
         "controller_name": os.getenv("UNIFI_CONTROLLER_NAME", ""),
+        "import_clients": is_truthy(os.getenv("UNIFI_IMPORT_CLIENTS", "true")),
+        "import_wireless_clients": is_truthy(os.getenv("UNIFI_IMPORT_WIRELESS_CLIENTS", "true")),
+        "sites": [site for site in os.getenv("UNIFI_SITES", "").split(",") if site],
         "unifi_host": os.getenv("UNIFI_HOST", ""),
         "unifi_password": os.getenv("UNIFI_PASSWORD", ""),
         "unifi_port": int(os.getenv("UNIFI_PORT", "8443")),
@@ -87,6 +90,9 @@ The app behavior can be controlled with the following list of settings:
 | Key              | Example              | Default | Description                                                   |
 | ---------------- | -------------------- | ------- | ------------------------------------------------------------- |
 | `controller_name` | `"home"`            | `unifi_host` | Name stored in each synced Device's UniFi Controller custom field. A sync only updates or deletes Devices with this controller's name, so several controllers can sync into one Nautobot. Set it to keep the name stable if the controller's address changes. |
+| `import_clients` | `False`              | `True`  | Whether to sync clients as Devices with the Client role. Clients with a randomized (locally administered) MAC address are skipped unless they have an alias in UniFi, because their MAC can change. |
+| `import_wireless_clients` | `False`     | `True`  | Whether to sync wireless clients. Has no effect when `import_clients` is off. |
+| `sites`          | `["default"]`        | `[]`    | Limit the sync to these UniFi sites, by short name (the ID in the site's URL, e.g. `default`) or description. Empty syncs every site. Locations and Devices of sites left out are not changed or deleted. |
 | `unifi_host`     | `"unifi.example.com"` | N/A     | Hostname or IP address of the UniFi Network controller.      |
 | `unifi_password` | `"changeme"`         | N/A     | Password for the UniFi controller user.                       |
 | `unifi_port`     | `8443`               | N/A     | Port of the UniFi controller API. Use `443` for UniFi OS consoles. |

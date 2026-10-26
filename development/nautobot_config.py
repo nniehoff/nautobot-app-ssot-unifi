@@ -132,7 +132,9 @@ PLUGINS_CONFIG = {
     },
     "nautobot_ssot_unifi": {
         "controller_name": os.getenv("UNIFI_CONTROLLER_NAME", ""),
-        "import_clients": is_truthy(os.getenv("UNIFI_IMPORT_CLIENTS", "false")),
+        "import_clients": is_truthy(os.getenv("UNIFI_IMPORT_CLIENTS", "true")),
+        "import_wireless_clients": is_truthy(os.getenv("UNIFI_IMPORT_WIRELESS_CLIENTS", "true")),
+        "sites": [site for site in os.getenv("UNIFI_SITES", "").split(",") if site],
         "unifi_host": os.getenv("UNIFI_HOST", ""),
         "unifi_password": os.getenv("UNIFI_PASSWORD", ""),
         "unifi_port": int(os.getenv("UNIFI_PORT", "8443")),

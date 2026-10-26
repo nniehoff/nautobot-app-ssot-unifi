@@ -2,12 +2,13 @@
 
 from django.contrib.contenttypes.models import ContentType
 from nautobot.core.testing import TransactionTestCase
-from nautobot.dcim.models import Device, DeviceType, Location, LocationType, Manufacturer
+from nautobot.dcim.models import Device, DeviceType, Interface, Location, LocationType, Manufacturer
 from nautobot.extras.choices import CustomFieldTypeChoices
 from nautobot.extras.models import CustomField, JobResult, Role, Status
 
 from nautobot_ssot_unifi.constants import SYSTEM_OF_RECORD
 from nautobot_ssot_unifi.diffsync.adapters.nautobot import UniFiNautobotAdapter
+from nautobot_ssot_unifi.diffsync.models.base import DeviceModel
 from nautobot_ssot_unifi.jobs import UniFiDataSource
 from nautobot_ssot_unifi.utils.unifi import get_controller_name
 
@@ -17,41 +18,73 @@ class TestUniFiNautobotAdapterTestCase(TransactionTestCase):
 
     databases = ("default", "job_logs")
 
-    def setUp(self):
-        """Create Devices from this controller, another controller, another System of Record, and none."""
+    @staticmethod
+    def _create_custom_fields():
+        """Create the Custom Fields the app's signal handler creates on a real install."""
         device_ct = ContentType.objects.get_for_model(Device)
-        sor_cf, _ = CustomField.objects.get_or_create(
-            key="system_of_record", defaults={"label": "System of Record", "type": CustomFieldTypeChoices.TYPE_TEXT}
-        )
-        sor_cf.content_types.add(device_ct)
-        controller_cf, _ = CustomField.objects.get_or_create(
-            key="unifi_controller", defaults={"label": "UniFi Controller", "type": CustomFieldTypeChoices.TYPE_TEXT}
-        )
-        controller_cf.content_types.add(device_ct)
+        location_ct = ContentType.objects.get_for_model(Location)
+        for key, content_types in (
+            ("system_of_record", [device_ct]),
+            ("unifi_controller", [device_ct, location_ct]),
+            ("unifi_site", [location_ct]),
+        ):
+            custom_field, _ = CustomField.objects.get_or_create(
+                key=key, defaults={"label": key, "type": CustomFieldTypeChoices.TYPE_TEXT}
+            )
+            custom_field.content_types.add(*content_types)
+
+    def setUp(self):
+        """Create Locations and Devices from this controller, another controller, another System of Record, and none."""
+        self._create_custom_fields()
+        device_ct = ContentType.objects.get_for_model(Device)
 
         status, _ = Status.objects.get_or_create(name="Active")
-        status.content_types.add(device_ct)
+        status.content_types.add(device_ct, ContentType.objects.get_for_model(Interface))
         role, _ = Role.objects.get_or_create(name="Router")
         role.content_types.add(device_ct)
         location_type, _ = LocationType.objects.get_or_create(name="Site")
         location_type.content_types.add(device_ct)
         location = Location.objects.create(name="Test", location_type=location_type, status=status)
+        Location.objects.create(
+            name="UniFi Site",
+            location_type=location_type,
+            status=status,
+            _custom_field_data={"unifi_site": "default", "unifi_controller": get_controller_name()},
+        )
+        Location.objects.create(
+            name="Other Controller Site",
+            location_type=location_type,
+            status=status,
+            _custom_field_data={"unifi_site": "default", "unifi_controller": "other-controller.example.com"},
+        )
         device_type = DeviceType.objects.create(
             model="Test Model", manufacturer=Manufacturer.objects.create(name="Test Manufacturer")
         )
-        for name, system_of_record, controller in (
-            ("unifi-device", SYSTEM_OF_RECORD, get_controller_name()),
-            ("other-controller-device", SYSTEM_OF_RECORD, "other-controller.example.com"),
-            ("other-device", "Other SSoT", None),
+        for name, system_of_record, controller, mac in (
+            ("unifi-device", SYSTEM_OF_RECORD, get_controller_name(), "00:11:22:33:44:01"),
+            ("other-controller-device", SYSTEM_OF_RECORD, "other-controller.example.com", "00:11:22:33:44:02"),
+            ("other-device", "Other SSoT", None, None),
+            ("no-mac-device", SYSTEM_OF_RECORD, get_controller_name(), None),
         ):
-            Device.objects.create(
+            device = Device.objects.create(
                 name=name,
                 location=location,
                 role=role,
                 device_type=device_type,
                 status=status,
-                _custom_field_data={"system_of_record": system_of_record, "unifi_controller": controller},
+                _custom_field_data={
+                    "system_of_record": system_of_record,
+                    "unifi_controller": controller,
+                },
             )
+            if mac:
+                # A data port sorting before the management Interface, to check which MAC identifies the Device.
+                Interface.objects.create(
+                    device=device, name="eth0", type="other", status=status, mac_address="00:11:22:33:44:ff"
+                )
+                Interface.objects.create(
+                    device=device, name="mgmt", type="other", status=status, mgmt_only=True, mac_address=mac
+                )
         Device.objects.create(
             name="no-sor-device", location=location, role=role, device_type=device_type, status=status
         )
@@ -63,4 +96,31 @@ class TestUniFiNautobotAdapterTestCase(TransactionTestCase):
     def test_load_only_unifi_devices(self):
         """Devices from other controllers or Systems of Record are never loaded, so a sync cannot delete them."""
         self.nautobot.load()
-        self.assertEqual({"unifi-device"}, {dev.get_unique_id() for dev in self.nautobot.get_all("device")})
+        self.assertEqual({"unifi-device"}, {dev.name for dev in self.nautobot.get_all("device")})
+        self.assertEqual({"00:11:22:33:44:01"}, {dev.get_unique_id() for dev in self.nautobot.get_all("device")})
+
+    def test_load_only_unifi_locations(self):
+        """Locations without a UniFi site, or from other controllers, are never loaded."""
+        self.nautobot.load()
+        self.assertEqual({"UniFi Site"}, {location.name for location in self.nautobot.get_all("location")})
+
+    def test_create_device_with_mac_interface(self):
+        """Creating a Device also creates the Interface holding its MAC, so the next sync matches it."""
+        DeviceModel.create(
+            adapter=self.nautobot,
+            ids={"mac_address": "00:11:22:33:44:aa"},
+            attrs={
+                "name": "new-client",
+                "location__name": "Test",
+                "role__name": "Router",
+                "device_type__model": "Test Model",
+                "device_type__manufacturer__name": "Test Manufacturer",
+                "status__name": "Active",
+                "system_of_record": SYSTEM_OF_RECORD,
+                "unifi_controller": get_controller_name(),
+            },
+        )
+        interface = Interface.objects.get(device__name="new-client")
+        self.assertEqual(("mgmt", True), (interface.name, interface.mgmt_only))
+        self.nautobot.load()
+        self.assertIn("00:11:22:33:44:aa", {dev.get_unique_id() for dev in self.nautobot.get_all("device")})

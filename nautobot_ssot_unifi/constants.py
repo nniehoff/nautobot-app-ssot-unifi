@@ -5,6 +5,13 @@
 # against, or deletes, Devices that came from somewhere else.
 SYSTEM_OF_RECORD = "UniFi SSoT"
 
+# Interface created on each synced Device to hold its MAC address, which
+# identifies the Device. UniFi network devices get a management interface,
+# clients a plain one.
+DEVICE_INTERFACE_NAME = "mgmt"
+CLIENT_INTERFACE_NAME = "eth0"
+CLIENT_ROLE = "Client"
+
 # pulled from https://ubntwiki.com/products/software/unifi-controller/api
 DEVICETYPE_MAP = {
     "BZ2": "Access Point",

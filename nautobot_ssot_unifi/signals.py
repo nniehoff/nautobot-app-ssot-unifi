@@ -4,7 +4,10 @@ from nautobot.extras.choices import CustomFieldTypeChoices
 
 
 def nautobot_database_ready_callback(sender, *, apps, **kwargs):  # pylint: disable=unused-argument
-    """Add System of Record and Last Sync'd CustomFields to Device, Interface, and IPAddress, and UniFi Controller to Device.
+    """Add the CustomFields this app syncs.
+
+    System of Record and Last Sync'd go on Device, Interface, and IPAddress; UniFi Controller on Device and
+    Location; UniFi Site on Location.
 
     Callback function triggered by the nautobot_database_ready signal when the Nautobot database is fully ready.
     """
@@ -12,6 +15,7 @@ def nautobot_database_ready_callback(sender, *, apps, **kwargs):  # pylint: disa
     ContentType = apps.get_model("contenttypes", "ContentType")
     CustomField = apps.get_model("extras", "CustomField")
     Device = apps.get_model("dcim", "Device")
+    Location = apps.get_model("dcim", "Location")
     Interface = apps.get_model("dcim", "Interface")
     IPAddress = apps.get_model("ipam", "IPAddress")
 
@@ -39,3 +43,11 @@ def nautobot_database_ready_callback(sender, *, apps, **kwargs):  # pylint: disa
         key=controller_cf_dict["key"], defaults=controller_cf_dict
     )
     controller_custom_field.content_types.add(ContentType.objects.get_for_model(Device))
+    controller_custom_field.content_types.add(ContentType.objects.get_for_model(Location))
+    site_cf_dict = {
+        "type": CustomFieldTypeChoices.TYPE_TEXT,
+        "key": "unifi_site",
+        "label": "UniFi Site",
+    }
+    site_custom_field, _ = CustomField.objects.update_or_create(key=site_cf_dict["key"], defaults=site_cf_dict)
+    site_custom_field.content_types.add(ContentType.objects.get_for_model(Location))

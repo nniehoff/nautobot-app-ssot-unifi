@@ -8,6 +8,7 @@ from nautobot.extras.models import JobResult
 
 from nautobot_ssot_unifi.diffsync.adapters.unifi import UniFiAdapter
 from nautobot_ssot_unifi.jobs import UniFiDataSource
+from nautobot_ssot_unifi.utils.unifi import PLUGIN_CFG, get_controller_name
 
 
 def load_json(path):
@@ -30,6 +31,7 @@ class TestUniFiAdapterTestCase(TransactionTestCase):
         """Initialize test case."""
         self.unifi_client = MagicMock()
         self.unifi_client.get_aps.return_value = AP_FIXTURE
+        self.unifi_client.get_clients.return_value = []
 
         self.job = self.job_class()
         self.job.job_result = JobResult.objects.create(
@@ -47,9 +49,18 @@ class TestUniFiAdapterTestCase(TransactionTestCase):
             {site.get_unique_id() for site in self.unifi.get_all("locationtype")},
         )
         self.assertEqual(
-            {"Test__Site"},
+            {f"default__{get_controller_name()}"},
             {site.get_unique_id() for site in self.unifi.get_all("location")},
         )
+        self.assertEqual("Test", self.unifi.get_all("location")[0].name)
+
+    @patch.dict(PLUGIN_CFG, {"sites": ["Second"]})
+    @patch("nautobot_ssot_unifi.diffsync.adapters.unifi.get_sites")
+    def test_load_sites_limited_to_selected(self, mock_get_sites):
+        """Only sites listed in `sites`, by short name or description, are loaded."""
+        mock_get_sites.return_value = SITE_FIXTURE + [{"_id": "second-site-id", "name": "nbxeaqa6", "desc": "Second"}]
+        self.unifi.load_sites()
+        self.assertEqual(["nbxeaqa6"], [site["name"] for site in self.unifi.sites])
 
     def test_load_manufacturer(self):
         """Test Nautobot SSoT UniFi load_manufacturer() function."""
@@ -62,18 +73,51 @@ class TestUniFiAdapterTestCase(TransactionTestCase):
         self.assertEqual({"Test__Ubiquiti"}, {dt.get_unique_id() for dt in self.unifi.get_all("devicetype")})
 
     def test_load_unifi_devices(self):
-        """Test Nautobot SSoT UniFi load_unifi_devices() function."""
-        self.unifi.site_map["63b0a5b8539cd042ecba85b5"] = "Test"
-        self.unifi.load_unifi_devices()
+        """UniFi network devices are loaded as Devices keyed by MAC address."""
+        self.unifi.load_devices(self.unifi.get_unifi_devices(SITE_FIXTURE[0]))
         self.assertEqual(
-            {dev["name"] for dev in AP_FIXTURE}, {dev.get_unique_id() for dev in self.unifi.get_all("device")}
+            {dev["mac"] for dev in AP_FIXTURE}, {dev.get_unique_id() for dev in self.unifi.get_all("device")}
+        )
+        self.assertEqual({dev["name"] for dev in AP_FIXTURE}, {dev.name for dev in self.unifi.get_all("device")})
+
+    @patch.dict(PLUGIN_CFG, {"import_wireless_clients": False})
+    def test_get_clients_filters(self):
+        """Wireless clients and unnamed clients with randomized MACs are skipped; names fall back to hostname."""
+        self.unifi_client.get_clients.return_value = [
+            {"mac": "00:11:22:33:44:01", "is_wired": True, "hostname": "nas", "oui": "Synology"},
+            {"mac": "00:11:22:33:44:02", "is_wired": False, "hostname": "phone"},
+            {"mac": "fe:11:22:33:44:03", "is_wired": True, "hostname": "laptop"},
+            {"mac": "fe:11:22:33:44:04", "is_wired": True, "hostname": "kvm", "name": "Rack KVM"},
+        ]
+        records = self.unifi.get_clients(SITE_FIXTURE[0])
+        self.assertEqual(
+            [("00:11:22:33:44:01", "nas"), ("fe:11:22:33:44:04", "Rack KVM")],
+            [(record["mac"], record["name"]) for record in records],
+        )
+
+    @patch.dict(PLUGIN_CFG, {"import_clients": False})
+    def test_get_clients_disabled(self):
+        """No clients are read when `import_clients` is off."""
+        self.assertEqual([], self.unifi.get_clients(SITE_FIXTURE[0]))
+        self.unifi_client.get_clients.assert_not_called()
+
+    def test_load_devices_duplicate_names(self):
+        """Devices sharing a name within a Location get their MAC appended."""
+        self.unifi_client.get_clients.return_value = [
+            {"mac": "00:11:22:33:44:01", "is_wired": True, "hostname": "glkvm"},
+            {"mac": "00:11:22:33:44:02", "is_wired": True, "hostname": "glkvm"},
+            {"mac": "00:11:22:33:44:03", "is_wired": True, "hostname": "nas"},
+        ]
+        self.unifi.load_devices(self.unifi.get_clients(SITE_FIXTURE[0]))
+        self.assertEqual(
+            {"glkvm (00:11:22:33:44:01)", "glkvm (00:11:22:33:44:02)", "nas"},
+            {dev.name for dev in self.unifi.get_all("device")},
         )
 
     @patch("nautobot_ssot_unifi.diffsync.adapters.unifi.get_sites")
     def test_load_reads_every_site(self, mock_get_sites):
         """load() switches the client to each site's short name before reading its devices and clients."""
         mock_get_sites.return_value = SITE_FIXTURE + [{"_id": "second-site-id", "name": "nbxeaqa6", "desc": "Second"}]
-        self.unifi_client.get_clients.return_value = []
         seen_sites = []
         self.unifi_client.get_aps.side_effect = lambda: seen_sites.append(self.unifi_client.site_id) or AP_FIXTURE
         self.unifi.load()
