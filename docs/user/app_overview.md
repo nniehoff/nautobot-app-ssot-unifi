@@ -33,9 +33,9 @@ The app creates these Custom Fields when Nautobot starts. The sync uses them to 
 
 | Key | Label | Applies to | Purpose |
 | --- | ----- | ---------- | ------- |
-| `system_of_record` | System of Record | Cable, Device, Interface, IP Address, Wireless Network | Set to `UniFi SSoT` on every Cable, Device, IP Address, and Wireless Network the sync creates. |
-| `ssot_last_synchronized` | Last sync from System of Record | Cable, Device, Interface, IP Address, Wireless Network | Date of the last sync that touched the object. |
-| `unifi_controller` | UniFi Controller | Cable, Device, IP Address, Location, Controller Managed Device Group, VLAN Group, Wireless Network | The `controller_name` setting of the controller the object came from. |
+| `system_of_record` | System of Record | Cable, Controller, Controller Managed Device Group, Device, Interface, IP Address, Location, Prefix, VLAN, VLAN Group, Wireless Network | Set to `UniFi SSoT` on every object the sync creates or adopts. |
+| `ssot_last_synchronized` | Last sync from System of Record | Cable, Controller, Controller Managed Device Group, Device, Interface, IP Address, Location, Prefix, VLAN, VLAN Group, Wireless Network | Date of the last sync that saw the object. |
+| `unifi_controller` | UniFi Controller | Cable, Controller, Controller Managed Device Group, Device, Interface, IP Address, Location, Prefix, VLAN, VLAN Group, Wireless Network | The `controller_name` setting of the controller the object came from. |
 | `unifi_site` | UniFi Site | Location, Controller Managed Device Group, VLAN Group | The site's short name, e.g. `default`. Identifies the Location and groups, so renaming a site in UniFi renames them. |
 
 Devices are identified by MAC address, which Nautobot keeps on Interfaces. Each Device the sync creates gets one Interface holding its UniFi MAC: `mgmt` (management only) for UniFi network devices, `eth0` for clients. Renaming a device or client in UniFi renames the Device in Nautobot. A Device with several MAC addresses is matched on its management Interfaces first, then by Interface name.
@@ -68,7 +68,7 @@ Each IP Address is assigned to an Interface of its Device:
 - The Interface it is already assigned to, if it was set up on that Device by hand, e.g. on `eth0` instead of `mgmt`.
 - Otherwise the Interface holding the Device's MAC address, else a new `mgmt` (UniFi devices) or `eth0` (clients) Interface.
 
-When a client's address changes, its assignment and the old IP Address go, so DHCP addresses follow UniFi. Prefixes and IP Addresses already in Nautobot are used as they are: the sync assigns them to Interfaces but never changes or deletes them, and addresses set up by hand that UniFi does not report are never unassigned. Prefixes are never deleted, and keep the Status set in Nautobot, as do IP Addresses. Primary IPs are not set.
+When a client's address changes, its assignment and the old IP Address go, so DHCP addresses follow UniFi. Prefixes and IP Addresses already in Nautobot are handled by the **Existing devices** option (see below): with Skip, the sync assigns them to Interfaces but never changes or deletes them. Addresses set up by hand that UniFi does not report are never unassigned. Prefixes are never deleted, and keep the Status set in Nautobot, as do IP Addresses. Primary IPs are not set.
 
 #### VLANs and switch ports
 
@@ -84,7 +84,7 @@ Each port of a UniFi switch, or of a gateway with switch ports, gets the 802.1Q 
 
 The port's native network is the untagged VLAN. A disabled port gets no mode. Ports in a link aggregation group, other than the group's first port, are skipped. Ports are matched to Interfaces as for Cables, and a missing one is created with a type from the port's media, e.g. `2.5gbase-t` or `10gbase-x-sfpp`. Existing Interfaces keep their type.
 
-VLANs already in Nautobot are used as they are, never changed: a VLAN ID that has a VLAN usable in the site's Location, global or in that Location or a parent, is not created in the site's group, and ports use the existing VLAN. A VLAN Group named like the site that the sync did not create gets the site's VLANs without being changed.
+A VLAN ID that already has a VLAN usable in the site's Location, global or in that Location or a parent, is not created in the site's group, and ports use the existing VLAN. With Skip it is never changed; adopted, it keeps its VLAN Group. A VLAN Group named like the site that the sync did not create gets the site's VLANs.
 
 #### Controller and wireless networks
 
@@ -102,15 +102,22 @@ The Location Type of the controller's Location needs to allow Controllers, so th
 
 Role, Device Type, and Status are set when the sync creates a Device and never updated afterwards, serial is only updated when UniFi reports one (clients have none), and Platform only when Nautobot has none. Clients keep the Platform, Software Version, and device group set in Nautobot. Assign the right Role or a Device Type from the device type library in Nautobot and the sync keeps it. Location Type and Status of Locations, and Location and Status of the Controller, work the same way. Name, Location, serial, and the custom fields follow UniFi.
 
-#### Devices and Locations already in Nautobot
+#### Objects already in Nautobot
 
-A Device already in Nautobot, but not synced from this controller, that has an Interface with a MAC address UniFi reports, is handled by the job's **Existing devices** option. Each case is logged as a warning:
+The sync only loads, updates, and deletes objects whose `system_of_record` and `unifi_controller` say it synced them (or, for Locations, device groups, and VLAN Groups, whose `unifi_site` and `unifi_controller` do). A Device already in Nautobot, but not synced from this controller, that has an Interface with a MAC address UniFi reports, is handled by the job's **Existing devices** option. Each case is logged as a warning:
 
 - **Skip** (default): the Device is left alone and the UniFi device is not synced.
 - **Adopt**: the sync takes the Device over. The warning lists what changes (name, Location, serial) and what it keeps (Role, Device Type). From then on it is synced like any other Device. Run a dry run first and read the warnings.
 - **Create**: the sync creates a separate Device from UniFi. This fails if the name is taken in the same Location.
 
-A MAC address found on more than one Device is skipped in every mode. A Location named like a UniFi site that the sync did not create is used as is: the site's Devices are placed in it, and the Location is never changed. Controller Managed Device Groups and Wireless Networks work the same way: an existing group gets the site's Devices, and an existing Wireless Network is assigned to the site's group, without either being changed.
+A MAC address found on more than one Device is skipped in every mode.
+
+The option also covers other objects matching UniFi ones: Locations and Controller Managed Device Groups named like a site, Wireless Networks named like a WLAN, VLAN Groups named like a site, VLANs usable in a site, Prefixes and IP Addresses with the same address, and hand-made Cables between the Interfaces UniFi reports.
+
+- **Skip** and **Create**: the object is used as is and never changed. A Location or group gets the site's Devices, a Wireless Network is assigned to the site's group, a VLAN Group gets the site's VLANs, and Prefixes, IP Addresses, and VLANs are used by the synced Devices.
+- **Adopt**: the sync stamps its custom fields on the object and updates it from UniFi from then on, like an adopted Device. Fields the sync only sets once keep Nautobot's values. Adopted IP Addresses are deleted when UniFi no longer reports them.
+
+The Controller named after `controller_name`, and the Interfaces of synced Devices that the sync manages, always get the custom fields.
 
 #### Jobs
 

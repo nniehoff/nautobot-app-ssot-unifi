@@ -1,0 +1,1 @@
+Changed every object the sync creates or adopts, including Locations, Controllers, device groups, VLAN Groups, VLANs, Prefixes, Interfaces, and Cables, to carry the System of Record, Last Sync'd, and UniFi Controller custom fields; the Existing devices option now also adopts or skips matching Locations, groups, Wireless Networks, VLANs, Prefixes, IP Addresses, and Cables.

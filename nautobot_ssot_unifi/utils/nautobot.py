@@ -185,6 +185,26 @@ def find_unsynced_ip_address(host: str):
     )
 
 
+def find_unsynced_prefix(network: str, prefix_length: int):
+    """Find a Prefix in the sync's Namespace that was not synced from this controller.
+
+    Args:
+        network (str): Network address, e.g. "192.168.1.0".
+        prefix_length (int): Prefix length.
+
+    Returns:
+        Prefix: The existing Prefix, or None.
+    """
+    return (
+        Prefix.objects.filter(network=network, prefix_length=prefix_length, namespace__name=get_namespace())
+        .exclude(
+            _custom_field_data__system_of_record=SYSTEM_OF_RECORD,
+            _custom_field_data__unifi_controller=get_controller_name(),
+        )
+        .first()
+    )
+
+
 def find_prefix_length(host: str) -> Optional[int]:
     """Length of the narrowest Prefix in the sync's Namespace containing an IP address.
 
@@ -253,6 +273,14 @@ def find_unsynced_vlan_group(name: str, unifi_site: str):
     return VLANGroup.objects.filter(name=name).first()
 
 
+def _synced_vlan_filter() -> Q:
+    """VLANs synced or adopted from this controller, or in one of its VLAN Groups."""
+    return Q(
+        _custom_field_data__system_of_record=SYSTEM_OF_RECORD,
+        _custom_field_data__unifi_controller=get_controller_name(),
+    ) | Q(vlan_group___custom_field_data__unifi_controller=get_controller_name())
+
+
 def available_vlans(vid: int, location):
     """VLANs with an ID that Interfaces of Devices in a Location can use.
 
@@ -280,7 +308,7 @@ def available_vlans(vid: int, location):
 def find_vlan(vid: int, location):
     """The VLAN an Interface of a Device in a Location should use for a VLAN ID.
 
-    VLANs in a VLAN Group synced from this controller come first, then VLANs in a Location, then global ones.
+    VLANs synced from this controller come first, then VLANs in a Location, then global ones.
 
     Args:
         vid (int): VLAN ID.
@@ -290,7 +318,7 @@ def find_vlan(vid: int, location):
         VLAN: The VLAN, or None if there is none.
     """
     vlans = available_vlans(vid, location)
-    synced = vlans.filter(vlan_group___custom_field_data__unifi_controller=get_controller_name()).first()
+    synced = vlans.filter(_synced_vlan_filter()).first()
     if synced:
         return synced
     candidates = sorted(vlans, key=lambda vlan: (not vlan.locations.exists(), vlan.vlan_group_id is None, str(vlan.pk)))
@@ -298,7 +326,7 @@ def find_vlan(vid: int, location):
 
 
 def find_unsynced_vlan(vid: int, location_name: str):
-    """Find a VLAN that Devices in a Location can use and that is not in a VLAN Group synced from this controller.
+    """Find a VLAN that Devices in a Location can use and that was not synced from this controller.
 
     Args:
         vid (int): VLAN ID.
@@ -308,8 +336,4 @@ def find_unsynced_vlan(vid: int, location_name: str):
         VLAN: The existing VLAN, or None.
     """
     location = Location.objects.filter(name=location_name).first()
-    return (
-        available_vlans(vid, location)
-        .exclude(vlan_group___custom_field_data__unifi_controller=get_controller_name())
-        .first()
-    )
+    return available_vlans(vid, location).exclude(_synced_vlan_filter()).first()

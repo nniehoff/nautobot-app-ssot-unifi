@@ -10,6 +10,7 @@ from nautobot_ssot.contrib import NautobotAdapter
 
 from nautobot_ssot_unifi.constants import SYSTEM_OF_RECORD
 from nautobot_ssot_unifi.diffsync.models.base import (
+    SYNCED_FIELDS,
     TOP_LEVEL,
     CableModel,
     ControllerManagedDeviceGroupModel,
@@ -61,7 +62,7 @@ class UniFiNautobotAdapter(NautobotAdapter):
     top_level = TOP_LEVEL
 
     def __init__(  # pylint: disable=too-many-arguments
-        self, *args, unifi_macs=frozenset(), unifi_ips=frozenset(), adopt_pks=(), sites=None, **kwargs
+        self, *args, unifi_macs=frozenset(), unifi_ips=frozenset(), adopt_pks=(), adopt=None, sites=None, **kwargs
     ):
         """Initialize the Nautobot adapter.
 
@@ -72,6 +73,8 @@ class UniFiNautobotAdapter(NautobotAdapter):
                 sync did not create the IP Address.
             adopt_pks (Iterable): Primary keys of Devices not yet synced from this controller to load anyway,
                 so the sync takes them over.
+            adopt (dict, optional): Other objects to take over: model name to primary key to the identifiers to load
+                the object with, for objects identified by custom fields they do not have yet.
             sites (list, optional): Selected UniFi sites. When set, only Devices in their Locations are loaded,
                 matched by the Location's `unifi_site` or by the site's name.
             **kwargs: Keyword arguments passed to NautobotAdapter.
@@ -80,12 +83,20 @@ class UniFiNautobotAdapter(NautobotAdapter):
         self.unifi_macs = frozenset(unifi_macs)
         self.unifi_ips = frozenset(unifi_ips)
         self.adopt_pks = list(adopt_pks)
+        self.adopt = adopt or {}
+        # Identifiers to load adopted objects with, by primary key.
+        self.adopt_identifiers = {
+            pk: identifiers for by_pk in self.adopt.values() for pk, identifiers in by_pk.items() if identifiers
+        }
         self.sites = sites
         # Primary keys of the loaded Devices: only their Cables are loaded.
         self.device_pks = set()
 
     def _load_objects(self, diffsync_model):
-        """Load Devices from the selected sites, plus the Devices being adopted, and their Cables and IP Addresses."""
+        """Load the objects synced from this controller, plus the ones being adopted.
+
+        Devices are limited to the selected sites; Cables, Interfaces, and IP Addresses to the loaded Devices'.
+        """
         if diffsync_model is CableModel:
             self._load_cables()
             return
@@ -100,6 +111,7 @@ class UniFiNautobotAdapter(NautobotAdapter):
             return
         if diffsync_model is not DeviceModel:
             super()._load_objects(diffsync_model)
+            self._load_adopted(diffsync_model)
             return
         queryset = DeviceModel._get_queryset()
         if self.sites is not None:
@@ -113,14 +125,26 @@ class UniFiNautobotAdapter(NautobotAdapter):
             self._load_single_object(device, DeviceModel, parameter_names)
             self.device_pks.add(device.pk)
 
+    def _load_adopted(self, diffsync_model):
+        """Load the objects of a model the sync is adopting, which its queryset leaves out as not synced yet."""
+        pks = self.adopt.get(diffsync_model._modelname, {})
+        if not pks:
+            return
+        parameter_names = diffsync_model.get_synced_attributes()
+        for database_object in diffsync_model._model.objects.filter(pk__in=list(pks)):
+            self._load_single_object(database_object, diffsync_model, parameter_names)
+
     def _load_cables(self):
         """Load the Interface-to-Interface Cables synced from this controller whose downstream Device was loaded.
 
         Cables of Devices in sites left out of `sites` are not loaded, so they are never deleted.
         """
         cables = Cable.objects.filter(
-            _custom_field_data__system_of_record=SYSTEM_OF_RECORD,
-            _custom_field_data__unifi_controller=get_controller_name(),
+            Q(
+                _custom_field_data__system_of_record=SYSTEM_OF_RECORD,
+                _custom_field_data__unifi_controller=get_controller_name(),
+            )
+            | Q(pk__in=list(self.adopt.get(CableModel._modelname, {})))
         )
         for cable in cables:
             # Nautobot 3 keeps terminations in a separate table, so filter on their type here rather than in SQL.
@@ -140,6 +164,7 @@ class UniFiNautobotAdapter(NautobotAdapter):
                         interface=downstream.name,
                         upstream_mac_address=upstream_mac,
                         upstream_interface=upstream.name,
+                        **{key: cable.cf.get(key) for key in SYNCED_FIELDS},
                         pk=cable.pk,
                     )
                 )
@@ -173,6 +198,7 @@ class UniFiNautobotAdapter(NautobotAdapter):
                     mode=interface.mode or None,
                     untagged_vid=interface.untagged_vlan.vid if interface.untagged_vlan else None,
                     tagged_vids=sorted({vlan.vid for vlan in interface.tagged_vlans.all()}),
+                    **{key: interface.cf.get(key) for key in SYNCED_FIELDS},
                     pk=interface.pk,
                 )
             )
@@ -188,6 +214,7 @@ class UniFiNautobotAdapter(NautobotAdapter):
         parameter_names = IPAddressModel.get_synced_attributes()
         for ip_address in queryset:
             self._load_single_object(ip_address, IPAddressModel, parameter_names)
+        self._load_adopted(IPAddressModel)
 
     def _load_ip_assignments(self):
         """Load the IP Address assignments to Interfaces of the loaded Devices that the sync manages.
@@ -221,7 +248,14 @@ class UniFiNautobotAdapter(NautobotAdapter):
                 continue
 
     def _handle_single_parameter(self, parameters, parameter_name, database_object, diffsync_model):
-        """Read a Device's `mac_address` from its Interfaces, since Device has no such field."""
+        """Read a Device's `mac_address` from its Interfaces, since Device has no such field.
+
+        Adopted objects identified by custom fields they do not have yet are loaded with the identifiers they get.
+        """
+        identifiers = self.adopt_identifiers.get(database_object.pk, {})
+        if parameter_name in identifiers:
+            parameters[parameter_name] = identifiers[parameter_name]
+            return
         if diffsync_model is DeviceModel and parameter_name == "mac_address":
             parameters[parameter_name] = get_device_mac(database_object, self.unifi_macs)
             return

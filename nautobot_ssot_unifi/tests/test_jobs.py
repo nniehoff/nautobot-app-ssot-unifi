@@ -6,6 +6,7 @@ from django.contrib.contenttypes.models import ContentType
 from nautobot.core.testing import TransactionTestCase
 from nautobot.dcim.models import Device, DeviceType, Interface, Location, LocationType, Manufacturer
 from nautobot.extras.models import JobResult, Role, Status
+from nautobot.ipam.models import IPAddress, Namespace, Prefix
 
 from nautobot_ssot_unifi.diffsync.adapters.unifi import UniFiAdapter
 from nautobot_ssot_unifi.jobs import UniFiDataSource
@@ -48,6 +49,7 @@ class TestExistingDevicesTestCase(TransactionTestCase):
             name=self.job.class_path, task_name="fake task", worker="default"
         )
         self.job.debug = False
+        self.job.adopt = {}
         self.job.source_adapter = UniFiAdapter(job=self.job, sync=None, client=MagicMock())
         self.job.source_adapter.add(
             self.job.source_adapter.device(
@@ -93,3 +95,39 @@ class TestExistingDevicesTestCase(TransactionTestCase):
         self.assertIn("name: 'usw1-manual' -> 'usw1'", description)
         self.assertIn("serial: '' -> 'ABC'", description)
         self.assertIn("keeps role 'Access Switch' (UniFi reports 'Unknown')", description)
+
+    def _add_unifi_ip_address(self):
+        """Create an IP Address by hand, and the same address in the UniFi adapter."""
+        Namespace.objects.get_or_create(name="Global")
+        status = Status.objects.get(name="Active")
+        status.content_types.add(
+            ContentType.objects.get_for_model(Prefix), ContentType.objects.get_for_model(IPAddress)
+        )
+        Prefix.objects.create(prefix="10.31.0.0/24", status=status)
+        existing = IPAddress.objects.create(address="10.31.0.87/24", status=status)
+        self.job.source_adapter.add(
+            self.job.source_adapter.ipaddress(
+                host="10.31.0.87",
+                parent__namespace__name="Global",
+                mask_length=24,
+                status__name="Active",
+                type="host",
+            )
+        )
+        return existing
+
+    def test_existing_ip_address_skip(self):
+        """With Skip, an existing IP Address is used as is: dropped from the sync, never adopted."""
+        self._add_unifi_ip_address()
+        self.job.existing_devices = "skip"
+        self.job.handle_existing_ip_addresses()
+        self.assertEqual([], self.job.source_adapter.get_all("ipaddress"))
+        self.assertEqual({}, self.job.adopt)
+
+    def test_existing_ip_address_adopt(self):
+        """With Adopt, an existing IP Address stays in the sync and is loaded from Nautobot as its match."""
+        existing = self._add_unifi_ip_address()
+        self.job.existing_devices = "adopt"
+        self.job.handle_existing_ip_addresses()
+        self.assertEqual(["10.31.0.87"], [ip.host for ip in self.job.source_adapter.get_all("ipaddress")])
+        self.assertEqual({"ipaddress": {existing.pk: {}}}, self.job.adopt)

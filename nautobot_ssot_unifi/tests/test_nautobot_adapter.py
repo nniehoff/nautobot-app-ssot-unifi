@@ -1,6 +1,7 @@
 """Test Nautobot adapter."""
 
 from diffsync.exceptions import ObjectNotCreated
+from django.apps import apps as django_apps
 from django.contrib.contenttypes.models import ContentType
 from nautobot.core.testing import TransactionTestCase
 from nautobot.dcim.models import (
@@ -14,8 +15,7 @@ from nautobot.dcim.models import (
     LocationType,
     Manufacturer,
 )
-from nautobot.extras.choices import CustomFieldTypeChoices
-from nautobot.extras.models import CustomField, JobResult, Role, Status
+from nautobot.extras.models import JobResult, Role, Status
 from nautobot.ipam.models import VLAN, IPAddress, IPAddressToInterface, Namespace, Prefix, VLANGroup
 from nautobot.wireless.models import ControllerManagedDeviceGroupWirelessNetworkAssignment, WirelessNetwork
 
@@ -32,6 +32,7 @@ from nautobot_ssot_unifi.diffsync.models.base import (
     VLANModel,
 )
 from nautobot_ssot_unifi.jobs import UniFiDataSource
+from nautobot_ssot_unifi.signals import nautobot_database_ready_callback
 from nautobot_ssot_unifi.utils.nautobot import (
     find_unsynced_ip_address,
     find_unsynced_vlan,
@@ -46,29 +47,10 @@ class TestUniFiNautobotAdapterTestCase(TransactionTestCase):
 
     databases = ("default", "job_logs")
 
-    @staticmethod
-    def _create_custom_fields():
-        """Create the Custom Fields the app's signal handler creates on a real install."""
-        device_ct = ContentType.objects.get_for_model(Device)
-        location_ct = ContentType.objects.get_for_model(Location)
-        group_ct = ContentType.objects.get_for_model(ControllerManagedDeviceGroup)
-        wireless_ct = ContentType.objects.get_for_model(WirelessNetwork)
-        cable_ct = ContentType.objects.get_for_model(Cable)
-        ip_ct = ContentType.objects.get_for_model(IPAddress)
-        vlan_group_ct = ContentType.objects.get_for_model(VLANGroup)
-        for key, content_types in (
-            ("system_of_record", [cable_ct, device_ct, ip_ct, wireless_ct]),
-            ("unifi_controller", [cable_ct, device_ct, ip_ct, location_ct, group_ct, vlan_group_ct, wireless_ct]),
-            ("unifi_site", [location_ct, group_ct, vlan_group_ct]),
-        ):
-            custom_field, _ = CustomField.objects.get_or_create(
-                key=key, defaults={"label": key, "type": CustomFieldTypeChoices.TYPE_TEXT}
-            )
-            custom_field.content_types.add(*content_types)
-
     def setUp(self):
         """Create Locations and Devices from this controller, another controller, another System of Record, and none."""
-        self._create_custom_fields()
+        # The Custom Fields the app creates when Nautobot starts, which TransactionTestCase flushes.
+        nautobot_database_ready_callback(sender=None, apps=django_apps)
         # TransactionTestCase flushes the Global Namespace Nautobot's migrations create.
         Namespace.objects.get_or_create(name="Global")
         device_ct = ContentType.objects.get_for_model(Device)
@@ -322,7 +304,12 @@ class TestUniFiNautobotAdapterTestCase(TransactionTestCase):
             VLANModel.create(
                 adapter=self.nautobot,
                 ids={"vid": vid, "vlan_group__name": "UniFi Site"},
-                attrs={"name": name, "status__name": "Active"},
+                attrs={
+                    "name": name,
+                    "status__name": "Active",
+                    "system_of_record": SYSTEM_OF_RECORD,
+                    "unifi_controller": get_controller_name(),
+                },
             )
         # A global VLAN made by hand: used for VLAN 30, which the site's group lacks, but not for VLAN 20.
         manual = VLAN.objects.create(vid=30, name="Cameras", status=Status.objects.get(name="Active"))
@@ -350,3 +337,32 @@ class TestUniFiNautobotAdapterTestCase(TransactionTestCase):
         port.refresh_from_db()
         self.assertEqual(("access", 20), (port.mode, port.untagged_vlan.vid))
         self.assertFalse(port.tagged_vlans.exists())
+
+    def test_adopt_existing_objects(self):
+        """Adopted objects load as UniFi's match, even when identified by custom fields they lack, and get them."""
+        location = Location.objects.get(name="Test")
+        Prefix.objects.create(prefix="192.168.1.0/24", status=Status.objects.get(name="Active"))
+        ip_address = IPAddress.objects.create(address="192.168.1.50/24", status=Status.objects.get(name="Active"))
+        nautobot = UniFiNautobotAdapter(
+            job=self.nautobot.job,
+            sync=None,
+            adopt={
+                "location": {location.pk: {"unifi_site": "office", "unifi_controller": get_controller_name()}},
+                "ipaddress": {ip_address.pk: {}},
+            },
+        )
+        nautobot.load()
+        self.assertEqual(["192.168.1.50"], [ip.host for ip in nautobot.get_all("ipaddress")])
+        adopted = nautobot.get("location", f"office__{get_controller_name()}")
+        self.assertEqual("Test", adopted.name)
+
+        adopted.update({"system_of_record": SYSTEM_OF_RECORD})
+        location.refresh_from_db()
+        self.assertEqual(
+            {"unifi_site": "office", "unifi_controller": get_controller_name(), "system_of_record": SYSTEM_OF_RECORD},
+            {key: location.cf.get(key) for key in ("unifi_site", "unifi_controller", "system_of_record")},
+        )
+        # Now synced, the Location loads without adopting it again.
+        reloaded = UniFiNautobotAdapter(job=self.nautobot.job, sync=None)
+        reloaded.load()
+        self.assertIn(f"office__{get_controller_name()}", {obj.get_unique_id() for obj in reloaded.get_all("location")})

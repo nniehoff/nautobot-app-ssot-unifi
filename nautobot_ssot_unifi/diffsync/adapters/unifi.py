@@ -165,6 +165,23 @@ class UniFiAdapter(Adapter):
         # Subnets of the UniFi networks read so far, to find the mask of each IP address.
         self.subnets = []
 
+    def synced_fields(self, controller: bool = True) -> dict:
+        """Custom fields marking an object as synced from this controller today.
+
+        Args:
+            controller (bool): Include `unifi_controller`; False for objects identified by it.
+
+        Returns:
+            dict: `system_of_record`, `ssot_last_synchronized`, and `unifi_controller`.
+        """
+        fields = {
+            "system_of_record": SYSTEM_OF_RECORD,
+            "ssot_last_synchronized": datetime.today().date().isoformat(),
+        }
+        if controller:
+            fields["unifi_controller"] = self.controller_name
+        return fields
+
     @staticmethod
     def location_content_types() -> list:
         """Content types Locations of UniFi sites must allow: Devices, and the Controller and VLAN Groups when synced."""
@@ -202,7 +219,12 @@ class UniFiAdapter(Adapter):
             self.get_or_instantiate(
                 self.location,
                 ids={"unifi_site": site["name"], "unifi_controller": self.controller_name},
-                attrs={"name": site["desc"], "location_type__name": "Site", "status__name": "Active"},
+                attrs={
+                    "name": site["desc"],
+                    "location_type__name": "Site",
+                    "status__name": "Active",
+                    **self.synced_fields(controller=False),
+                },
             )
 
     def load_controller(self):
@@ -216,6 +238,7 @@ class UniFiAdapter(Adapter):
                 "location__name": self.sites[0]["desc"],
                 "status__name": "Active",
                 "capabilities": [WIRELESS_CAPABILITY],
+                **self.synced_fields(),
             },
         )
 
@@ -232,6 +255,7 @@ class UniFiAdapter(Adapter):
                 "name": site["desc"],
                 "controller__name": self.controller_name,
                 "capabilities": [WIRELESS_CAPABILITY],
+                **self.synced_fields(controller=False),
             },
         )
 
@@ -264,9 +288,7 @@ class UniFiAdapter(Adapter):
                     "enabled": bool(wlan.get("enabled", True)),
                     "authentication": authentication,
                     "hidden": bool(wlan.get("hide_ssid", False)),
-                    "system_of_record": SYSTEM_OF_RECORD,
-                    "ssot_last_synchronized": datetime.today().date().isoformat(),
-                    "unifi_controller": self.controller_name,
+                    **self.synced_fields(),
                 },
             )
             self.get_or_instantiate(
@@ -307,7 +329,7 @@ class UniFiAdapter(Adapter):
                     "prefix_length": subnet.prefixlen,
                     "namespace__name": get_namespace(),
                 },
-                attrs={"status__name": "Active"},
+                attrs={"status__name": "Active", **self.synced_fields()},
             )
 
     def load_vlans(self, site: dict, networks: list):
@@ -328,14 +350,18 @@ class UniFiAdapter(Adapter):
         self.get_or_instantiate(
             self.vlangroup,
             ids={"unifi_site": site["name"], "unifi_controller": self.controller_name},
-            attrs={"name": site["desc"], "location__name": site["desc"]},
+            attrs={"name": site["desc"], "location__name": site["desc"], **self.synced_fields(controller=False)},
         )
         names = {network.get("_id") or network.get("id"): network.get("name") for network in networks}
         for network_id, vid in sorted(self.network_vlans.items(), key=lambda item: item[1]):
             self.get_or_instantiate(
                 self.vlan,
                 ids={"vid": vid, "vlan_group__name": site["desc"]},
-                attrs={"name": names.get(network_id) or f"VLAN {vid}", "status__name": "Active"},
+                attrs={
+                    "name": names.get(network_id) or f"VLAN {vid}",
+                    "status__name": "Active",
+                    **self.synced_fields(),
+                },
             )
 
     def read_device_ports(self, device: dict):
@@ -375,6 +401,7 @@ class UniFiAdapter(Adapter):
                     "mode": mode,
                     "untagged_vid": untagged_vid,
                     "tagged_vids": tagged_vids,
+                    **self.synced_fields(),
                 },
             )
 
@@ -429,9 +456,7 @@ class UniFiAdapter(Adapter):
                     "mask_length": mask_length,
                     "status__name": "Active",
                     "type": record["ip_type"],
-                    "system_of_record": SYSTEM_OF_RECORD,
-                    "ssot_last_synchronized": datetime.today().date().isoformat(),
-                    "unifi_controller": self.controller_name,
+                    **self.synced_fields(),
                 },
             )
             default = CLIENT_INTERFACE_NAME if record["role"] == CLIENT_ROLE else DEVICE_INTERFACE_NAME
@@ -552,6 +577,7 @@ class UniFiAdapter(Adapter):
                     "interface": interface,
                     "upstream_mac_address": upstream_mac,
                     "upstream_interface": resolve_interface_name(upstream_mac, port_names, default),
+                    **self.synced_fields(),
                 },
             )
 
@@ -686,9 +712,7 @@ class UniFiAdapter(Adapter):
                     "software_version__platform__name": record["platform"] if record["version"] else None,
                     "software_version__version": record["version"],
                     "controller_managed_device_group__name": record["group"],
-                    "system_of_record": SYSTEM_OF_RECORD,
-                    "ssot_last_synchronized": datetime.today().date().isoformat(),
-                    "unifi_controller": self.controller_name,
+                    **self.synced_fields(),
                 },
             )
 

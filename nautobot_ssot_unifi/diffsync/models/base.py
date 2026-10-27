@@ -1,5 +1,6 @@
 """DiffSyncModel subclasses for Nautobot-to-UniFi data sync."""
 
+from datetime import date
 from typing import Annotated, List, Optional
 
 from diffsync.enum import DiffSyncModelFlags
@@ -36,6 +37,37 @@ from nautobot_ssot_unifi.constants import (
 )
 from nautobot_ssot_unifi.utils.nautobot import find_devices_by_mac, find_vlan
 from nautobot_ssot_unifi.utils.unifi import get_controller_name, get_namespace, get_selected_sites
+
+# Custom fields on every object the sync creates or adopts: the System of Record, the date of the last sync that
+# saw it, and the controller it came from. Querysets load only objects carrying this controller's values, so a
+# sync never changes or deletes objects from elsewhere.
+SystemOfRecord = Annotated[Optional[str], CustomFieldAnnotation(name="system_of_record")]
+LastSynchronized = Annotated[Optional[str], CustomFieldAnnotation(name="ssot_last_synchronized")]
+UniFiController = Annotated[Optional[str], CustomFieldAnnotation(name="unifi_controller")]
+SYNCED_FIELDS = ("system_of_record", "ssot_last_synchronized", "unifi_controller")
+
+
+def custom_field_data(attrs: dict) -> dict:
+    """The synced custom fields set in a DiffSync model's attributes, for creating an object directly."""
+    return {key: attrs[key] for key in SYNCED_FIELDS if attrs.get(key) is not None}
+
+
+def synced_custom_field_data() -> dict:
+    """Custom field data marking an object the sync creates outside a DiffSync model, such as an Interface."""
+    return {
+        "system_of_record": SYSTEM_OF_RECORD,
+        "ssot_last_synchronized": date.today().isoformat(),
+        "unifi_controller": get_controller_name(),
+    }
+
+
+def owned_filter() -> dict:
+    """Queryset filter for objects synced from this controller."""
+    return {
+        "_custom_field_data__system_of_record": SYSTEM_OF_RECORD,
+        "_custom_field_data__unifi_controller": get_controller_name(),
+    }
+
 
 # Load and sync order of the models in both adapters: every model after the ones it refers to.
 TOP_LEVEL = [
@@ -99,7 +131,7 @@ class LocationModel(NautobotModel):
     _model = Location
     _modelname = "location"
     _identifiers = ("unifi_site", "unifi_controller")
-    _attributes = ("name", "location_type__name", "status__name")
+    _attributes = ("name", "location_type__name", "status__name", "system_of_record", "ssot_last_synchronized")
     _children = {}
 
     unifi_site: Annotated[str, CustomFieldAnnotation(key="unifi_site")]
@@ -107,6 +139,12 @@ class LocationModel(NautobotModel):
     name: str
     location_type__name: str
     status__name: str
+    system_of_record: SystemOfRecord = None
+    ssot_last_synchronized: LastSynchronized = None
+
+    def update(self, attrs):
+        """Update the object, also writing the custom fields identifying it, which an adopted one lacks."""
+        return super().update({"unifi_site": self.unifi_site, "unifi_controller": self.unifi_controller, **attrs})
 
     @classmethod
     def _get_queryset(cls):
@@ -217,13 +255,23 @@ class ControllerModel(NautobotModel):
     _model = Controller
     _modelname = "controller"
     _identifiers = ("name",)
-    _attributes = ("location__name", "status__name", "capabilities")
+    _attributes = (
+        "location__name",
+        "status__name",
+        "capabilities",
+        "system_of_record",
+        "ssot_last_synchronized",
+        "unifi_controller",
+    )
     _children = {}
 
     name: str
     location__name: str
     status__name: str
     capabilities: Optional[List[str]] = None
+    system_of_record: SystemOfRecord = None
+    ssot_last_synchronized: LastSynchronized = None
+    unifi_controller: UniFiController = None
 
     @classmethod
     def _get_queryset(cls):
@@ -243,7 +291,7 @@ class ControllerManagedDeviceGroupModel(NautobotModel):
     _model = ControllerManagedDeviceGroup
     _modelname = "devicegroup"
     _identifiers = ("unifi_site", "unifi_controller")
-    _attributes = ("name", "controller__name", "capabilities")
+    _attributes = ("name", "controller__name", "capabilities", "system_of_record", "ssot_last_synchronized")
     _children = {}
 
     unifi_site: Annotated[str, CustomFieldAnnotation(key="unifi_site")]
@@ -251,6 +299,12 @@ class ControllerManagedDeviceGroupModel(NautobotModel):
     name: str
     controller__name: str
     capabilities: Optional[List[str]] = None
+    system_of_record: SystemOfRecord = None
+    ssot_last_synchronized: LastSynchronized = None
+
+    def update(self, attrs):
+        """Update the object, also writing the custom fields identifying it, which an adopted one lacks."""
+        return super().update({"unifi_site": self.unifi_site, "unifi_controller": self.unifi_controller, **attrs})
 
     @classmethod
     def _get_queryset(cls):
@@ -297,9 +351,9 @@ class WirelessNetworkModel(NautobotModel):
     authentication: str
     hidden: bool
 
-    system_of_record: Annotated[Optional[str], CustomFieldAnnotation(name="system_of_record")] = None
-    ssot_last_synchronized: Annotated[Optional[str], CustomFieldAnnotation(name="ssot_last_synchronized")] = None
-    unifi_controller: Annotated[Optional[str], CustomFieldAnnotation(name="unifi_controller")] = None
+    system_of_record: SystemOfRecord = None
+    ssot_last_synchronized: LastSynchronized = None
+    unifi_controller: UniFiController = None
 
     @classmethod
     def _get_queryset(cls):
@@ -308,14 +362,7 @@ class WirelessNetworkModel(NautobotModel):
         A sync deletes every loaded Wireless Network UniFi no longer reports, and Wireless Networks have no
         Location, so without the second filter a WLAN of a site left out of `sites` would be deleted.
         """
-        queryset = (
-            super()
-            ._get_queryset()
-            .filter(
-                _custom_field_data__system_of_record=SYSTEM_OF_RECORD,
-                _custom_field_data__unifi_controller=get_controller_name(),
-            )
-        )
+        queryset = super()._get_queryset().filter(**owned_filter())
         if get_selected_sites():
             queryset = queryset.filter(
                 controller_managed_device_group_assignments__controller_managed_device_group__in=(
@@ -366,13 +413,19 @@ class VLANGroupModel(NautobotModel):
     _model = VLANGroup
     _modelname = "vlangroup"
     _identifiers = ("unifi_site", "unifi_controller")
-    _attributes = ("name", "location__name")
+    _attributes = ("name", "location__name", "system_of_record", "ssot_last_synchronized")
     _children = {}
 
     unifi_site: Annotated[str, CustomFieldAnnotation(key="unifi_site")]
     unifi_controller: Annotated[str, CustomFieldAnnotation(key="unifi_controller")]
     name: str
     location__name: Optional[str] = None
+    system_of_record: SystemOfRecord = None
+    ssot_last_synchronized: LastSynchronized = None
+
+    def update(self, attrs):
+        """Update the object, also writing the custom fields identifying it, which an adopted one lacks."""
+        return super().update({"unifi_site": self.unifi_site, "unifi_controller": self.unifi_controller, **attrs})
 
     @classmethod
     def _get_queryset(cls):
@@ -391,7 +444,7 @@ class VLANGroupModel(NautobotModel):
 
 
 class VLANModel(NautobotModel):
-    """DiffSync model for the VLAN of a UniFi network, in its site's VLAN Group.
+    """DiffSync model for the VLAN of a UniFi network, in its site's VLAN Group, or for an adopted VLAN, its own.
 
     Status is only set when the sync creates the VLAN. VLANs are never deleted: a network removed from UniFi may
     still be configured elsewhere.
@@ -402,18 +455,26 @@ class VLANModel(NautobotModel):
     _model = VLAN
     _modelname = "vlan"
     _identifiers = ("vid", "vlan_group__name")
-    _attributes = ("name", "status__name")
+    _attributes = ("name", "status__name", *SYNCED_FIELDS)
     _children = {}
 
     vid: int
-    vlan_group__name: str
+    vlan_group__name: Optional[str] = None
     name: str
     status__name: str
+    system_of_record: SystemOfRecord = None
+    ssot_last_synchronized: LastSynchronized = None
+    unifi_controller: UniFiController = None
 
     @classmethod
     def _get_queryset(cls):
-        """Load only VLANs in VLAN Groups synced from the selected sites of this controller."""
-        return super()._get_queryset().filter(vlan_group__in=VLANGroupModel._get_queryset())
+        """Load only VLANs synced from this controller, or in one of its VLAN Groups."""
+        return (
+            super()
+            ._get_queryset()
+            .filter(Q(**owned_filter()) | Q(vlan_group__in=VLANGroupModel._get_queryset()))
+            .distinct()
+        )
 
 
 class DeviceModel(NautobotModel):
@@ -463,9 +524,9 @@ class DeviceModel(NautobotModel):
     software_version__version: Optional[str] = None
     controller_managed_device_group__name: Optional[str] = None
 
-    system_of_record: Annotated[Optional[str], CustomFieldAnnotation(name="system_of_record")] = None
-    ssot_last_synchronized: Annotated[Optional[str], CustomFieldAnnotation(name="ssot_last_synchronized")] = None
-    unifi_controller: Annotated[Optional[str], CustomFieldAnnotation(name="unifi_controller")] = None
+    system_of_record: SystemOfRecord = None
+    ssot_last_synchronized: LastSynchronized = None
+    unifi_controller: UniFiController = None
 
     @classmethod
     def _get_queryset(cls):
@@ -480,8 +541,7 @@ class DeviceModel(NautobotModel):
             super()
             ._get_queryset()
             .filter(
-                _custom_field_data__system_of_record=SYSTEM_OF_RECORD,
-                _custom_field_data__unifi_controller=get_controller_name(),
+                **owned_filter(),
                 pk__in=Interface.objects.exclude(mac_address__isnull=True).exclude(mac_address="").values("device"),
             )
             .prefetch_related("interfaces")
@@ -506,6 +566,7 @@ class DeviceModel(NautobotModel):
                     mgmt_only=not is_client,
                     mac_address=ids["mac_address"],
                     status=Status.objects.get(name="Active"),
+                    _custom_field_data=synced_custom_field_data(),
                 ).validated_save()
         except (ObjectCrudException, ValidationError) as error:
             raise ObjectNotCreated(error) from error
@@ -540,7 +601,7 @@ def get_or_create_interface(mac: str, name: str, interface_type: str = Interface
         interface_type (str): Type of the Interface if it is created.
 
     Returns:
-        Interface: The Interface, created if the Device had none by that name.
+        Interface: The Interface, created and marked as synced if the Device had none by that name.
     """
     devices = find_devices_by_mac([mac]).get(mac, [])
     if len(devices) != 1:
@@ -552,6 +613,7 @@ def get_or_create_interface(mac: str, name: str, interface_type: str = Interface
             name=name,
             type=interface_type,
             status=Status.objects.get(name="Active"),
+            _custom_field_data=synced_custom_field_data(),
         )
         interface.validated_save()
     return interface
@@ -586,13 +648,16 @@ class CableModel(NautobotModel):
     _model = Cable
     _modelname = "cable"
     _identifiers = ("mac_address",)
-    _attributes = ("interface", "upstream_mac_address", "upstream_interface")
+    _attributes = ("interface", "upstream_mac_address", "upstream_interface", *SYNCED_FIELDS)
     _children = {}
 
     mac_address: str
     interface: str
     upstream_mac_address: str
     upstream_interface: str
+    system_of_record: SystemOfRecord = None
+    ssot_last_synchronized: LastSynchronized = None
+    unifi_controller: UniFiController = None
 
     @staticmethod
     def _free(interface: Interface):
@@ -619,10 +684,8 @@ class CableModel(NautobotModel):
                 termination_a=upstream,
                 termination_b=downstream,
                 status=Status.objects.get(name=CABLE_STATUS),
-                _custom_field_data={
-                    "system_of_record": SYSTEM_OF_RECORD,
-                    "unifi_controller": get_controller_name(),
-                },
+                # Always marked as synced: the Nautobot adapter only loads Cables it can tell are its own.
+                _custom_field_data={**synced_custom_field_data(), **custom_field_data(attrs)},
             )
             cable.validated_save()
         return cable
@@ -645,12 +708,17 @@ class CableModel(NautobotModel):
         return model
 
     def update(self, attrs):
-        """Replace the Cable with one between the Interfaces UniFi now reports."""
+        """Replace the Cable with one between the Interfaces UniFi now reports, or only update its custom fields."""
         merged = {**self.get_attrs(), **attrs}
         try:
-            self._disconnect()
-            cable = self._connect(self.get_identifiers(), merged)
-        except (ObjectCrudException, ValidationError) as error:
+            if set(attrs) <= set(SYNCED_FIELDS):
+                cable = Cable.objects.get(pk=self.pk)
+                cable._custom_field_data.update(custom_field_data(merged))  # pylint: disable=protected-access
+                cable.validated_save()
+            else:
+                self._disconnect()
+                cable = self._connect(self.get_identifiers(), merged)
+        except (Cable.DoesNotExist, ObjectCrudException, ValidationError) as error:
             raise ObjectNotUpdated(error) from error
         self.pk = cable.pk
         return super(NautobotModel, self).update(attrs)
@@ -670,25 +738,27 @@ class PrefixModel(NautobotModel):
     Status is only set when the sync creates the Prefix.
     """
 
-    # Shared with IPAM and other Systems of Record: create the subnets UniFi
-    # uses, never change or delete a Prefix otherwise.
+    # Never delete Prefixes: other IP Addresses may be in a subnet UniFi stops using.
     model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
 
     _model = Prefix
     _modelname = "prefix"
     _identifiers = ("network", "prefix_length", "namespace__name")
-    _attributes = ("status__name",)
+    _attributes = ("status__name", *SYNCED_FIELDS)
     _children = {}
 
     network: str
     prefix_length: int
     namespace__name: str
     status__name: str
+    system_of_record: SystemOfRecord = None
+    ssot_last_synchronized: LastSynchronized = None
+    unifi_controller: UniFiController = None
 
     @classmethod
     def _get_queryset(cls):
-        """Load only Prefixes in the sync's Namespace."""
-        return super()._get_queryset().filter(namespace__name=get_namespace())
+        """Load only Prefixes synced from this controller in the sync's Namespace."""
+        return super()._get_queryset().filter(**owned_filter(), namespace__name=get_namespace())
 
     @classmethod
     def create(cls, adapter, ids, attrs):
@@ -698,6 +768,7 @@ class PrefixModel(NautobotModel):
                 prefix=f"{ids['network']}/{ids['prefix_length']}",
                 namespace=Namespace.objects.get(name=ids["namespace__name"]),
                 status=Status.objects.get(name=attrs["status__name"]),
+                _custom_field_data=custom_field_data(attrs),
             )
             prefix.validated_save()
         except (Namespace.DoesNotExist, Status.DoesNotExist, ValidationError) as error:
@@ -712,8 +783,8 @@ class IPAddressModel(NautobotModel):
     """DiffSync model for the IP address of a UniFi device or client, identified by address and Namespace.
 
     The mask comes from the UniFi network containing the address, else the narrowest Prefix in Nautobot. Status is
-    only set when the sync creates the IP Address. The sync only changes or deletes IP Addresses it created; existing
-    ones are assigned to Interfaces as they are (see `UniFiDataSource.handle_existing_ip_addresses()`).
+    only set when the sync creates the IP Address. The sync only changes or deletes IP Addresses it created or adopted;
+    others are assigned to Interfaces as they are (see `UniFiDataSource.handle_existing_ip_addresses()`).
     """
 
     _model = IPAddress
@@ -735,9 +806,9 @@ class IPAddressModel(NautobotModel):
     status__name: str
     type: str
 
-    system_of_record: Annotated[Optional[str], CustomFieldAnnotation(name="system_of_record")] = None
-    ssot_last_synchronized: Annotated[Optional[str], CustomFieldAnnotation(name="ssot_last_synchronized")] = None
-    unifi_controller: Annotated[Optional[str], CustomFieldAnnotation(name="unifi_controller")] = None
+    system_of_record: SystemOfRecord = None
+    ssot_last_synchronized: LastSynchronized = None
+    unifi_controller: UniFiController = None
 
     @classmethod
     def _get_queryset(cls):
@@ -745,15 +816,7 @@ class IPAddressModel(NautobotModel):
 
         UniFiNautobotAdapter narrows this to the IP Addresses of the loaded Devices when `sites` is set.
         """
-        return (
-            super()
-            ._get_queryset()
-            .filter(
-                _custom_field_data__system_of_record=SYSTEM_OF_RECORD,
-                _custom_field_data__unifi_controller=get_controller_name(),
-                parent__namespace__name=get_namespace(),
-            )
-        )
+        return super()._get_queryset().filter(**owned_filter(), parent__namespace__name=get_namespace())
 
     @classmethod
     def create(cls, adapter, ids, attrs):
@@ -764,11 +827,7 @@ class IPAddressModel(NautobotModel):
                 namespace=Namespace.objects.get(name=ids["parent__namespace__name"]),
                 status=Status.objects.get(name=attrs["status__name"]),
                 type=attrs["type"],
-                _custom_field_data={
-                    key: attrs[key]
-                    for key in ("system_of_record", "ssot_last_synchronized", "unifi_controller")
-                    if attrs.get(key) is not None
-                },
+                _custom_field_data=custom_field_data(attrs),
             )
             ip_address.validated_save()
         except (Namespace.DoesNotExist, Status.DoesNotExist, ValidationError) as error:
@@ -844,6 +903,7 @@ class InterfaceModel(NautobotModel):
 
     VLANs are compared by VLAN ID and set to the VLAN `find_vlan()` picks for the Device's Location, so a VLAN made by
     hand is used when it fits. Type is only set when the sync creates the Interface. Interfaces are never deleted.
+    The Interfaces of a synced or adopted Device belong to it, so the sync marks the ports it manages as synced.
     """
 
     model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
@@ -851,7 +911,7 @@ class InterfaceModel(NautobotModel):
     _model = Interface
     _modelname = "interface"
     _identifiers = ("mac_address", "name")
-    _attributes = ("type", "mode", "untagged_vid", "tagged_vids")
+    _attributes = ("type", "mode", "untagged_vid", "tagged_vids", *SYNCED_FIELDS)
     _children = {}
 
     mac_address: str
@@ -860,6 +920,9 @@ class InterfaceModel(NautobotModel):
     mode: Optional[str] = None
     untagged_vid: Optional[int] = None
     tagged_vids: List[int] = []
+    system_of_record: SystemOfRecord = None
+    ssot_last_synchronized: LastSynchronized = None
+    unifi_controller: UniFiController = None
 
     @staticmethod
     def _get_vlan(vid: int, interface: Interface) -> VLAN:
@@ -871,10 +934,11 @@ class InterfaceModel(NautobotModel):
 
     @classmethod
     def _apply(cls, interface: Interface, attrs: dict):
-        """Set the Interface's mode and VLANs."""
+        """Set the Interface's mode, VLANs, and synced custom fields."""
         interface.mode = attrs.get("mode") or ""
         untagged_vid = attrs.get("untagged_vid")
         interface.untagged_vlan = cls._get_vlan(untagged_vid, interface) if untagged_vid else None
+        interface._custom_field_data.update(custom_field_data(attrs))  # pylint: disable=protected-access
         interface.validated_save()
         if interface.mode == "tagged":
             interface.tagged_vlans.set([cls._get_vlan(vid, interface) for vid in attrs.get("tagged_vids") or []])
