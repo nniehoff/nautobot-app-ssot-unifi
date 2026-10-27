@@ -45,6 +45,30 @@ def find_devices_by_mac(macs) -> dict:
     return {mac: list(by_pk.values()) for mac, by_pk in devices.items()}
 
 
+def _synced_filter() -> Q:
+    """Objects synced or adopted from this controller."""
+    return Q(
+        _custom_field_data__system_of_record=SYSTEM_OF_RECORD,
+        _custom_field_data__unifi_controller=get_controller_name(),
+    )
+
+
+def exclude_synced(queryset, condition: Q):
+    """Leave out the objects matching a condition.
+
+    `QuerySet.exclude()` would also leave out objects the condition is unknown for, such as ones without the custom
+    fields or without a VLAN Group, since SQL `NOT NULL` is not true. Excluding by primary key keeps them.
+
+    Args:
+        queryset (QuerySet): Objects to filter.
+        condition (Q): Condition of the objects to leave out.
+
+    Returns:
+        QuerySet: The objects not matching the condition.
+    """
+    return queryset.exclude(pk__in=queryset.model.objects.filter(condition).values("pk"))
+
+
 def find_unsynced_location(name: str, unifi_site: str):
     """Find a Location with a UniFi site's name that a sync from this controller does not manage.
 
@@ -90,14 +114,7 @@ def find_unsynced_wireless_network(name: str):
     Returns:
         WirelessNetwork: The colliding Wireless Network, or None.
     """
-    return (
-        WirelessNetwork.objects.filter(name=name)
-        .exclude(
-            _custom_field_data__system_of_record=SYSTEM_OF_RECORD,
-            _custom_field_data__unifi_controller=get_controller_name(),
-        )
-        .first()
-    )
+    return exclude_synced(WirelessNetwork.objects.filter(name=name), _synced_filter()).first()
 
 
 def resolve_interface_name(mac: str, candidates, default: str) -> str:
@@ -175,14 +192,9 @@ def find_unsynced_ip_address(host: str):
     Returns:
         IPAddress: The existing IP Address, or None.
     """
-    return (
-        IPAddress.objects.filter(host=host, parent__namespace__name=get_namespace())
-        .exclude(
-            _custom_field_data__system_of_record=SYSTEM_OF_RECORD,
-            _custom_field_data__unifi_controller=get_controller_name(),
-        )
-        .first()
-    )
+    return exclude_synced(
+        IPAddress.objects.filter(host=host, parent__namespace__name=get_namespace()), _synced_filter()
+    ).first()
 
 
 def find_unsynced_prefix(network: str, prefix_length: int):
@@ -195,14 +207,10 @@ def find_unsynced_prefix(network: str, prefix_length: int):
     Returns:
         Prefix: The existing Prefix, or None.
     """
-    return (
-        Prefix.objects.filter(network=network, prefix_length=prefix_length, namespace__name=get_namespace())
-        .exclude(
-            _custom_field_data__system_of_record=SYSTEM_OF_RECORD,
-            _custom_field_data__unifi_controller=get_controller_name(),
-        )
-        .first()
-    )
+    return exclude_synced(
+        Prefix.objects.filter(network=network, prefix_length=prefix_length, namespace__name=get_namespace()),
+        _synced_filter(),
+    ).first()
 
 
 def find_prefix_length(host: str) -> Optional[int]:
@@ -275,10 +283,7 @@ def find_unsynced_vlan_group(name: str, unifi_site: str):
 
 def _synced_vlan_filter() -> Q:
     """VLANs synced or adopted from this controller, or in one of its VLAN Groups."""
-    return Q(
-        _custom_field_data__system_of_record=SYSTEM_OF_RECORD,
-        _custom_field_data__unifi_controller=get_controller_name(),
-    ) | Q(vlan_group___custom_field_data__unifi_controller=get_controller_name())
+    return _synced_filter() | Q(vlan_group___custom_field_data__unifi_controller=get_controller_name())
 
 
 def available_vlans(vid: int, location):
@@ -336,4 +341,4 @@ def find_unsynced_vlan(vid: int, location_name: str):
         VLAN: The existing VLAN, or None.
     """
     location = Location.objects.filter(name=location_name).first()
-    return available_vlans(vid, location).exclude(_synced_vlan_filter()).first()
+    return exclude_synced(available_vlans(vid, location), _synced_vlan_filter()).first()

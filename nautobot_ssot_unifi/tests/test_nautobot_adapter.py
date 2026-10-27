@@ -60,6 +60,7 @@ class TestUniFiNautobotAdapterTestCase(TransactionTestCase):
             device_ct,
             ContentType.objects.get_for_model(Interface),
             ContentType.objects.get_for_model(IPAddress),
+            ContentType.objects.get_for_model(Location),
             ContentType.objects.get_for_model(Prefix),
             ContentType.objects.get_for_model(VLAN),
         )
