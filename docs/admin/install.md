@@ -56,6 +56,7 @@ PLUGINS_CONFIG = {
         "controller_name": os.getenv("UNIFI_CONTROLLER_NAME", ""),
         "exclude_client_networks": [network for network in os.getenv("UNIFI_EXCLUDE_CLIENT_NETWORKS", "").split(",") if network],
         "exclude_client_uplinks": [uplink for uplink in os.getenv("UNIFI_EXCLUDE_CLIENT_UPLINKS", "").split(",") if uplink],
+        "import_cables": is_truthy(os.getenv("UNIFI_IMPORT_CABLES", "true")),
         "import_clients": is_truthy(os.getenv("UNIFI_IMPORT_CLIENTS", "true")),
         "import_wireless": is_truthy(os.getenv("UNIFI_IMPORT_WIRELESS", "true")),
         "import_wireless_clients": is_truthy(os.getenv("UNIFI_IMPORT_WIRELESS_CLIENTS", "true")),
@@ -97,6 +98,7 @@ The app behavior can be controlled with the following list of settings:
 | `controller_name` | `"home"`            | `unifi_host` | Name stored in each synced Device's UniFi Controller custom field. A sync only updates or deletes Devices with this controller's name, so several controllers can sync into one Nautobot. Set it to keep the name stable if the controller's address changes. |
 | `exclude_client_networks` | `["Guest"]` | `[]` | Skip clients on these UniFi networks, by name. |
 | `exclude_client_uplinks` | `["WAN Switch"]` | `[]` | Skip clients connected through these UniFi switches or access points, by name or MAC address. |
+| `import_cables` | `False`               | `True`  | Whether to sync a Cable from each wired UniFi device and client to the switch port UniFi reports it on. |
 | `import_clients` | `False`              | `True`  | Whether to sync clients as Devices with the Client role. Clients with a randomized (locally administered) MAC address are skipped unless they have an alias in UniFi, because their MAC can change. |
 | `import_wireless` | `False`             | `True`  | Whether to sync the controller as a Controller, each site as a controller managed device group holding its UniFi devices, and WLANs as Wireless Networks assigned to their site's group. |
 | `import_wireless_clients` | `False`     | `True`  | Whether to sync wireless clients. Has no effect when `import_clients` is off. |

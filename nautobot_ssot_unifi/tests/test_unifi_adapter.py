@@ -288,3 +288,90 @@ class TestUniFiAdapterTestCase(TransactionTestCase):
             {("dcim", "controller"), ("dcim", "device"), ("dcim", "rack")},
             {(ct["app_label"], ct["model"]) for ct in self.unifi.get("locationtype", "Site").content_types},
         )
+
+    def test_load_cables(self):
+        """Wired devices and clients get a Cable to their switch port; shared ports and wireless clients do not."""
+        switch = {
+            "mac": "F4:E2:C6:BF:5C:FD",
+            "name": "officesw1",
+            "model": "US8P150",
+            "type": "usw",
+            "serial": "",
+            "port_table": [
+                {"port_idx": 1, "name": "Printer"},
+                {"port_idx": 3, "name": "Port 3"},
+                {"port_idx": 8, "name": "Port 8"},
+            ],
+            "uplink": {"type": "wire", "uplink_mac": "00:00:00:00:00:99", "uplink_remote_port": 1},
+        }
+        access_point = {
+            "mac": "60:22:32:fd:ae:68",
+            "name": "Office",
+            "model": "U6ENT",
+            "type": "uap",
+            "serial": "",
+            "uplink": {
+                "type": "wire",
+                "name": "eth0",
+                "port_idx": 1,
+                "uplink_mac": "f4:e2:c6:bf:5c:fd",
+                "uplink_remote_port": 8,
+            },
+        }
+        self.unifi_client.get_aps.return_value = [switch, access_point]
+        self.unifi_client.get_clients.return_value = [
+            {
+                "mac": "00:11:22:33:44:01",
+                "is_wired": True,
+                "hostname": "printer",
+                "sw_mac": "f4:e2:c6:bf:5c:fd",
+                "sw_port": 1,
+            },
+            {
+                "mac": "00:11:22:33:44:02",
+                "is_wired": True,
+                "hostname": "vm1",
+                "sw_mac": "f4:e2:c6:bf:5c:fd",
+                "sw_port": 3,
+            },
+            {
+                "mac": "00:11:22:33:44:03",
+                "is_wired": True,
+                "hostname": "vm2",
+                "sw_mac": "f4:e2:c6:bf:5c:fd",
+                "sw_port": 3,
+            },
+            {
+                "mac": "00:11:22:33:44:04",
+                "is_wired": True,
+                "hostname": "behind-ap",
+                "sw_mac": "f4:e2:c6:bf:5c:fd",
+                "sw_port": 8,
+            },
+            {"mac": "00:11:22:33:44:05", "is_wired": False, "hostname": "phone", "ap_mac": "60:22:32:fd:ae:68"},
+        ]
+        site = SITE_FIXTURE[0]
+        records = self.unifi.get_unifi_devices(site) + self.unifi.get_clients(site)
+        self.unifi.load_devices(records)
+        self.unifi.load_cables()
+        self.assertEqual(
+            {
+                ("60:22:32:fd:ae:68", "eth0", "f4:e2:c6:bf:5c:fd", "Port 8"),
+                ("00:11:22:33:44:01", "eth0", "f4:e2:c6:bf:5c:fd", "Port 1"),
+            },
+            {
+                (cable.mac_address, cable.interface, cable.upstream_mac_address, cable.upstream_interface)
+                for cable in self.unifi.get_all("cable")
+            },
+        )
+        # A device left out of the sync, e.g. skipped as an existing Device, takes its Cable with it.
+        self.unifi.remove(self.unifi.get("device", "00:11:22:33:44:01"))
+        self.unifi.prune_unused()
+        self.assertEqual(["60:22:32:fd:ae:68"], [cable.mac_address for cable in self.unifi.get_all("cable")])
+
+    @patch.dict(PLUGIN_CFG, {"import_cables": False})
+    def test_load_cables_disabled(self):
+        """No Cables are loaded when `import_cables` is off."""
+        self.unifi.links = [{"mac": "a", "interface": None, "upstream_mac": "b", "upstream_port": 1}]
+        self.unifi.load_cables()
+        self.assertEqual([], self.unifi.get_all("cable"))

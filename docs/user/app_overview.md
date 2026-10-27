@@ -33,9 +33,9 @@ The app creates these Custom Fields when Nautobot starts. The sync uses them to 
 
 | Key | Label | Applies to | Purpose |
 | --- | ----- | ---------- | ------- |
-| `system_of_record` | System of Record | Device, Interface, IP Address, Wireless Network | Set to `UniFi SSoT` on every Device and Wireless Network the sync creates. |
-| `ssot_last_synchronized` | Last sync from System of Record | Device, Interface, IP Address, Wireless Network | Date of the last sync that touched the object. |
-| `unifi_controller` | UniFi Controller | Device, Location, Controller Managed Device Group, Wireless Network | The `controller_name` setting of the controller the object came from. |
+| `system_of_record` | System of Record | Cable, Device, Interface, IP Address, Wireless Network | Set to `UniFi SSoT` on every Cable, Device, and Wireless Network the sync creates. |
+| `ssot_last_synchronized` | Last sync from System of Record | Cable, Device, Interface, IP Address, Wireless Network | Date of the last sync that touched the object. |
+| `unifi_controller` | UniFi Controller | Cable, Device, Location, Controller Managed Device Group, Wireless Network | The `controller_name` setting of the controller the object came from. |
 | `unifi_site` | UniFi Site | Location, Controller Managed Device Group | The site's short name, e.g. `default`. Identifies the Location and group, so renaming a site in UniFi renames them. |
 
 Devices are identified by MAC address, which Nautobot keeps on Interfaces. Each Device the sync creates gets one Interface holding its UniFi MAC: `mgmt` (management only) for UniFi network devices, `eth0` for clients. Renaming a device or client in UniFi renames the Device in Nautobot. A Device with several MAC addresses is matched on its management Interfaces first, then by Interface name.
@@ -45,6 +45,19 @@ Device names come from the UniFi alias, then the hostname, then the MAC address.
 #### Software versions
 
 Each UniFi network device gets a Platform for its kind (`UniFi Access Point`, `UniFi Switch`, `UniFi Gateway`, or `UniFi Device`) and a Software Version for the firmware it runs, e.g. `UniFi Switch 7.5.15.17146`. Software Versions no device runs any more are kept as history. Clients get neither.
+
+#### Cables
+
+With `import_cables` on (the default), the sync creates a Cable from each wired UniFi device and client to the switch port UniFi reports it on: the upstream switch port is the Cable's A side, the device or client its B side. A Cable moves when the device or client moves to another port, and is deleted when either end leaves the sync.
+
+Ports are matched to Interfaces by name: the port's name in UniFi (e.g. `SFP 1`), then `Port 8`, then `8`. A port with no matching Interface gets a new `Port 8` Interface, and an access point an `eth0` Interface. Clients are cabled from the Interface holding their MAC address. Switch Interfaces named `Port <n>`, as UniFi names ports by default, are used as they are.
+
+Some links get no Cable:
+
+- Wireless clients, and access points uplinked over mesh.
+- Ports with several clients, such as clients behind an unmanaged switch or a host with virtual machines. When one of them is a UniFi device, its Cable is created and the clients are skipped.
+- Links to devices or clients left out of the sync, such as an upstream device outside UniFi.
+- Interfaces that already have a Cable the sync did not create. A matching Cable made by hand is left as is; any other is logged as a warning.
 
 #### Controller and wireless networks
 
@@ -74,5 +87,5 @@ A MAC address found on more than one Device is skipped in every mode. A Location
 
 #### Jobs
 
-- **UniFi to Nautobot** syncs UniFi sites, devices, clients, firmware versions, the controller, and WLANs into Nautobot.
+- **UniFi to Nautobot** syncs UniFi sites, devices, clients, cables, firmware versions, the controller, and WLANs into Nautobot.
 - **Nautobot to UniFi** is a placeholder. Do not run it: it writes to Nautobot, not UniFi.

@@ -3,12 +3,13 @@
 from typing import Annotated, List, Optional
 
 from diffsync.enum import DiffSyncModelFlags
-from diffsync.exceptions import ObjectCrudException, ObjectNotCreated
+from diffsync.exceptions import ObjectCrudException, ObjectNotCreated, ObjectNotDeleted, ObjectNotUpdated
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Q
 from nautobot.dcim.choices import InterfaceTypeChoices
 from nautobot.dcim.models import (
+    Cable,
     Controller,
     ControllerManagedDeviceGroup,
     Device,
@@ -26,11 +27,13 @@ from nautobot_ssot.contrib import CustomFieldAnnotation, NautobotModel
 from typing_extensions import TypedDict
 
 from nautobot_ssot_unifi.constants import (
+    CABLE_STATUS,
     CLIENT_INTERFACE_NAME,
     CLIENT_ROLE,
     DEVICE_INTERFACE_NAME,
     SYSTEM_OF_RECORD,
 )
+from nautobot_ssot_unifi.utils.nautobot import find_devices_by_mac
 from nautobot_ssot_unifi.utils.unifi import get_controller_name, get_selected_sites
 
 # Load and sync order of the models in both adapters: every model after the ones it refers to.
@@ -47,6 +50,7 @@ TOP_LEVEL = [
     "platform",
     "softwareversion",
     "device",
+    "cable",
 ]
 
 
@@ -456,3 +460,127 @@ def get_device_mac(device: Device, preferred: frozenset = frozenset()) -> Option
     interfaces = sorted(device.interfaces.all(), key=lambda interface: (not interface.mgmt_only, interface.name))
     macs = [str(interface.mac_address).lower() for interface in interfaces if interface.mac_address]
     return next((mac for mac in macs if mac in preferred), macs[0] if macs else None)
+
+
+def is_synced_cable(cable: Cable) -> bool:
+    """Whether a Cable was created by a sync from this controller.
+
+    Args:
+        cable (Cable): Nautobot Cable.
+
+    Returns:
+        bool: True if its System of Record and UniFi Controller custom fields point here.
+    """
+    return (
+        cable.cf.get("system_of_record") == SYSTEM_OF_RECORD
+        and cable.cf.get("unifi_controller") == get_controller_name()
+    )
+
+
+class CableModel(NautobotModel):
+    """DiffSync model for the wired link from a UniFi device or client to the switch port UniFi reports it on.
+
+    Every device and client has one uplink, so a Cable is identified by the MAC address of its downstream
+    end, `termination_b`. The upstream switch port is `termination_a`. Ports are matched to Interfaces by
+    name (see `UniFiAdapter.load_cables()`); a missing Interface is created when the Cable is.
+
+    The sync only changes or deletes Cables it created. Creating a Cable on an Interface that already has
+    one the sync did not create fails; one the sync created, for a device that moved, is replaced.
+    """
+
+    _model = Cable
+    _modelname = "cable"
+    _identifiers = ("mac_address",)
+    _attributes = ("interface", "upstream_mac_address", "upstream_interface")
+    _children = {}
+
+    mac_address: str
+    interface: str
+    upstream_mac_address: str
+    upstream_interface: str
+
+    @staticmethod
+    def _get_interface(mac: str, name: str) -> Interface:
+        """Get or create the named Interface of the Device with a MAC address."""
+        devices = find_devices_by_mac([mac]).get(mac, [])
+        if len(devices) != 1:
+            raise ObjectCrudException(f"Expected one Device with MAC {mac}, found {len(devices)}.")
+        interface = Interface.objects.filter(device=devices[0], name=name).first()
+        if interface is None:
+            interface = Interface(
+                device=devices[0],
+                name=name,
+                type=InterfaceTypeChoices.TYPE_OTHER,
+                status=Status.objects.get(name="Active"),
+            )
+            interface.validated_save()
+        return interface
+
+    @staticmethod
+    def _free(interface: Interface):
+        """Remove a Cable the sync created from an Interface; refuse to touch any other Cable."""
+        cable = interface.cable
+        if cable is None:
+            return
+        if not is_synced_cable(cable):
+            raise ObjectCrudException(
+                f"{interface.device} {interface} already has Cable {cable} not synced from UniFi."
+            )
+        cable.delete()
+        interface.refresh_from_db()
+
+    @classmethod
+    def _connect(cls, ids: dict, attrs: dict) -> Cable:
+        """Create the Cable between the two Interfaces, creating them if needed."""
+        with transaction.atomic():
+            upstream = cls._get_interface(attrs["upstream_mac_address"], attrs["upstream_interface"])
+            downstream = cls._get_interface(ids["mac_address"], attrs["interface"])
+            cls._free(upstream)
+            cls._free(downstream)
+            cable = Cable(
+                termination_a=upstream,
+                termination_b=downstream,
+                status=Status.objects.get(name=CABLE_STATUS),
+                _custom_field_data={
+                    "system_of_record": SYSTEM_OF_RECORD,
+                    "unifi_controller": get_controller_name(),
+                },
+            )
+            cable.validated_save()
+        return cable
+
+    def _disconnect(self):
+        """Delete this Cable, unless something earlier in the sync, such as deleting a Device, already did."""
+        cable = Cable.objects.filter(pk=self.pk).first()
+        if cable is not None:
+            cable.delete()
+
+    @classmethod
+    def create(cls, adapter, ids, attrs):
+        """Create the Cable, and any Interface it needs."""
+        try:
+            cable = cls._connect(ids, attrs)
+        except (ObjectCrudException, ValidationError) as error:
+            raise ObjectNotCreated(error) from error
+        model = super(NautobotModel, cls).create(adapter, ids, attrs)
+        model.pk = cable.pk
+        return model
+
+    def update(self, attrs):
+        """Replace the Cable with one between the Interfaces UniFi now reports."""
+        merged = {**self.get_attrs(), **attrs}
+        try:
+            self._disconnect()
+            cable = self._connect(self.get_identifiers(), merged)
+        except (ObjectCrudException, ValidationError) as error:
+            raise ObjectNotUpdated(error) from error
+        self.pk = cable.pk
+        return super(NautobotModel, self).update(attrs)
+
+    def delete(self):
+        """Delete the Cable. Interfaces the sync created for it are kept."""
+        try:
+            self._disconnect()
+        except ValidationError as error:
+            raise ObjectNotDeleted(error) from error
+        return super(NautobotModel, self).delete()

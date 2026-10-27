@@ -95,3 +95,69 @@ def find_unsynced_wireless_network(name: str):
         )
         .first()
     )
+
+
+def resolve_interface_name(mac: str, candidates, default: str) -> str:
+    """Name of the Interface of the Device with a MAC address that matches the first candidate name it has.
+
+    Args:
+        mac (str): Lowercase MAC address identifying the Device.
+        candidates (Iterable[str]): Interface names to look for, in order of preference.
+        default (str): Name to use when the Device is not in Nautobot yet, or has none of the candidates.
+
+    Returns:
+        str: Interface name.
+    """
+    devices = find_devices_by_mac([mac]).get(mac, [])
+    if len(devices) != 1:
+        return default
+    names = set(devices[0].interfaces.values_list("name", flat=True))
+    return next((name for name in candidates if name in names), default)
+
+
+def resolve_mac_interface_name(mac: str, default: str) -> str:
+    """Name of the Interface holding a MAC address, such as a client's.
+
+    Args:
+        mac (str): Lowercase MAC address.
+        default (str): Name to use when no Interface has the MAC yet.
+
+    Returns:
+        str: Interface name.
+    """
+    interface = Interface.objects.filter(mac_address=mac, device__isnull=False).order_by("name").first()
+    return interface.name if interface else default
+
+
+def find_interface(mac: str, interface_name: str):
+    """Find the named Interface of the Device with a MAC address.
+
+    Args:
+        mac (str): Lowercase MAC address identifying the Device.
+        interface_name (str): Interface name.
+
+    Returns:
+        Interface: The Interface, or None if there is not exactly one such Device or it has no such Interface.
+    """
+    devices = find_devices_by_mac([mac]).get(mac, [])
+    if len(devices) != 1:
+        return None
+    return devices[0].interfaces.filter(name=interface_name).first()
+
+
+def find_unsynced_cable(interface):
+    """The Cable on an Interface, if a sync from this controller did not create it.
+
+    Args:
+        interface (Interface): Interface, or None.
+
+    Returns:
+        Cable: The Cable, or None if there is no Interface, it has no Cable, or the sync created it.
+    """
+    cable = interface.cable if interface else None
+    if cable is None or (
+        cable.cf.get("system_of_record") == SYSTEM_OF_RECORD
+        and cable.cf.get("unifi_controller") == get_controller_name()
+    ):
+        return None
+    return cable

@@ -1,6 +1,7 @@
 """DiffSync models for Nautobot SSoT UniFi."""
 
 from nautobot_ssot_unifi.diffsync.models.base import (
+    CableModel,
     ControllerManagedDeviceGroupModel,
     ControllerModel,
     DeviceModel,
@@ -217,4 +218,21 @@ class UniFiWirelessNetworkAssignmentModel(WirelessNetworkAssignmentModel):
 
     def delete(self):
         """Delete WirelessNetwork assignment in UniFi from UniFiWirelessNetworkAssignmentModel object."""
+        return self
+
+
+class UniFiCableModel(CableModel):
+    """UniFi implementation of Cable DiffSync model."""
+
+    @classmethod
+    def create(cls, adapter, ids, attrs):
+        """Create Cable in UniFi from UniFiCableModel object."""
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
+
+    def update(self, attrs):
+        """Update Cable in UniFi from UniFiCableModel object."""
+        return super().update(attrs)
+
+    def delete(self):
+        """Delete Cable in UniFi from UniFiCableModel object."""
         return self

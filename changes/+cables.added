@@ -1,0 +1,1 @@
+Added syncing of Cables from wired UniFi devices and clients to the switch ports UniFi reports them on, with the new `import_cables` setting (default on).

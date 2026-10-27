@@ -1,6 +1,6 @@
 """Nautobot Adapter for UniFi SSoT plugin."""
 
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime
 from typing import Optional
 
@@ -9,6 +9,7 @@ from diffsync.exceptions import ObjectNotFound
 from pyunifi.controller import Controller
 
 from nautobot_ssot_unifi.constants import (
+    CLIENT_INTERFACE_NAME,
     CLIENT_ROLE,
     DEVICETYPE_MAP,
     SYSTEM_OF_RECORD,
@@ -17,6 +18,7 @@ from nautobot_ssot_unifi.constants import (
 )
 from nautobot_ssot_unifi.diffsync.models.base import TOP_LEVEL
 from nautobot_ssot_unifi.diffsync.models.unifi import (
+    UniFiCableModel,
     UniFiControllerManagedDeviceGroupModel,
     UniFiControllerModel,
     UniFiDeviceModel,
@@ -30,6 +32,7 @@ from nautobot_ssot_unifi.diffsync.models.unifi import (
     UniFiWirelessNetworkAssignmentModel,
     UniFiWirelessNetworkModel,
 )
+from nautobot_ssot_unifi.utils.nautobot import resolve_interface_name, resolve_mac_interface_name
 from nautobot_ssot_unifi.utils.unifi import (
     PLUGIN_CFG,
     get_controller_name,
@@ -44,6 +47,24 @@ from nautobot_ssot_unifi.utils.unifi import (
 def import_wireless() -> bool:
     """Whether to sync the controller, its device groups, and wireless networks (`import_wireless`, default True)."""
     return PLUGIN_CFG.get("import_wireless", True)
+
+
+def import_cables() -> bool:
+    """Whether to sync Cables from wired devices and clients to their switch ports (`import_cables`, default True)."""
+    return PLUGIN_CFG.get("import_cables", True)
+
+
+def port_interface_names(port_names: dict, port: int) -> list:
+    """Interface names a UniFi switch port may have in Nautobot, in order of preference.
+
+    Args:
+        port_names (dict): Port number to name in UniFi, e.g. {1: "Port 1", 8: "Uplink", 9: "SFP 1"}.
+        port (int): Port number.
+
+    Returns:
+        list: The port's name in UniFi, then "Port <n>", then "<n>".
+    """
+    return list(dict.fromkeys(name for name in (port_names.get(port), f"Port {port}", str(port)) if name))
 
 
 def sorted_content_types(content_types) -> list:
@@ -68,6 +89,7 @@ class UniFiAdapter(Adapter):
     wirelessnetwork = UniFiWirelessNetworkModel
     wirelessnetworkassignment = UniFiWirelessNetworkAssignmentModel
     device = UniFiDeviceModel
+    cable = UniFiCableModel
 
     top_level = TOP_LEVEL
 
@@ -93,6 +115,10 @@ class UniFiAdapter(Adapter):
         # Location Types of existing Locations the sync uses as is, kept by `prune_unused()` although no
         # synced Location refers to them, so the content types UniFi objects need are added to them.
         self.required_location_types = set()
+        # Port number to name of each UniFi device with switch ports, by lowercase MAC.
+        self.port_names = {}
+        # Wired links read from UniFi, loaded as Cables by `load_cables()` once all Devices are loaded.
+        self.links = []
 
     @staticmethod
     def location_content_types() -> list:
@@ -223,6 +249,7 @@ class UniFiAdapter(Adapter):
         self.uplink_names = {ap["mac"].lower(): ap.get("name") or ap["mac"] for ap in aps}
         records = []
         for ap in aps:
+            self.read_device_link(ap)
             model = DEVICETYPE_MAP[ap["model"]] if DEVICETYPE_MAP.get(ap["model"]) else ap["model"]
             records.append(
                 {
@@ -239,6 +266,81 @@ class UniFiAdapter(Adapter):
                 }
             )
         return records
+
+    def read_device_link(self, device: dict):
+        """Record a UniFi device's switch port names and its wired uplink.
+
+        Args:
+            device (dict): Device from the UniFi `stat/device` endpoint.
+        """
+        mac = device["mac"].lower()
+        port_names = {
+            port["port_idx"]: port.get("name") for port in device.get("port_table") or [] if "port_idx" in port
+        }
+        if port_names:
+            self.port_names[mac] = port_names
+        uplink = device.get("uplink") or {}
+        if uplink.get("type") != "wire" or not uplink.get("uplink_mac") or not uplink.get("uplink_remote_port"):
+            return
+        if port_names and uplink.get("port_idx"):
+            interfaces = port_interface_names(port_names, uplink["port_idx"])
+            default = f"Port {uplink['port_idx']}"
+        else:
+            # Access points: no switch ports, just the Ethernet interface UniFi names, e.g. "eth0".
+            interfaces = [uplink.get("name") or CLIENT_INTERFACE_NAME]
+            default = interfaces[0]
+        self.links.append(
+            {
+                "mac": mac,
+                "interface": interfaces,
+                "default": default,
+                "upstream_mac": uplink["uplink_mac"].lower(),
+                "upstream_port": int(uplink["uplink_remote_port"]),
+            }
+        )
+
+    def load_cables(self):
+        """Load a Cable for each wired link between two loaded Devices.
+
+        Links of a device or client left out of the sync are skipped. A switch port with several links,
+        such as clients behind an unmanaged switch or a host with virtual machines, gets no Cable unless
+        one of them is a UniFi device, which then wins.
+        """
+        if not import_cables():
+            return
+        loaded = {device.mac_address for device in self.get_all(self.device)}
+        links = [link for link in self.links if link["mac"] in loaded and link["upstream_mac"] in loaded]
+        by_port = defaultdict(list)
+        for link in links:
+            by_port[(link["upstream_mac"], link["upstream_port"])].append(link)
+        for (upstream_mac, port), port_links in by_port.items():
+            devices = [link for link in port_links if link["interface"] is not None]
+            chosen = devices if len(devices) == 1 else port_links
+            if len(chosen) != 1:
+                if self.job.debug:
+                    self.job.logger.debug(
+                        "Skipping Cables to %s port %s: %s links (%s)",
+                        self.uplink_names.get(upstream_mac, upstream_mac),
+                        port,
+                        len(port_links),
+                        ", ".join(link["mac"] for link in port_links),
+                    )
+                continue
+            link = chosen[0]
+            if link["interface"] is None:
+                interface = resolve_mac_interface_name(link["mac"], CLIENT_INTERFACE_NAME)
+            else:
+                interface = resolve_interface_name(link["mac"], link["interface"], link["default"])
+            port_names = port_interface_names(self.port_names.get(upstream_mac, {}), port)
+            self.get_or_instantiate(
+                self.cable,
+                ids={"mac_address": link["mac"]},
+                attrs={
+                    "interface": interface,
+                    "upstream_mac_address": upstream_mac,
+                    "upstream_interface": resolve_interface_name(upstream_mac, port_names, f"Port {port}"),
+                },
+            )
 
     def client_skip_reason(self, client: dict) -> Optional[str]:
         """Why a client is left out of the sync, or None to sync it.
@@ -294,6 +396,15 @@ class UniFiAdapter(Adapter):
                 if self.job.debug:
                     self.job.logger.debug("Skipping UniFi client %s: %s", client["mac"], skip_reason)
                 continue
+            if client.get("is_wired") and client.get("sw_mac") and client.get("sw_port"):
+                self.links.append(
+                    {
+                        "mac": client["mac"].lower(),
+                        "interface": None,
+                        "upstream_mac": client["sw_mac"].lower(),
+                        "upstream_port": int(client["sw_port"]),
+                    }
+                )
             hostname = client.get("hostname") if client.get("hostname") != "\x03" else None
             records.append(
                 {
@@ -380,6 +491,7 @@ class UniFiAdapter(Adapter):
             records.extend(self.get_unifi_devices(site))
             records.extend(self.get_clients(site))
         self.load_devices(records)
+        self.load_cables()
 
     def keep_nautobot_fields(self, target: Adapter):
         """Copy the fields the sync only sets on create, or only adds to, from Nautobot over the UniFi values.
@@ -442,7 +554,10 @@ class UniFiAdapter(Adapter):
             return None
 
     def prune_unused(self):
-        """Drop Roles, Device Types, Manufacturers, Platforms, Software Versions, and Location Types nothing needs.
+        """Drop Cables and shared objects that no remaining Device or Location needs.
+
+        Cables to Devices left out of the sync go, as do unreferenced Roles, Device Types, Manufacturers,
+        Platforms, Software Versions, and Location Types.
 
         Devices left out of the sync, and the Nautobot values kept by `keep_nautobot_fields()`, leave
         UniFi's versions of these unreferenced; without this the sync would create them for nothing.
@@ -457,6 +572,10 @@ class UniFiAdapter(Adapter):
             if device.software_version__version
         }
         platforms = {device.platform__name for device in devices} | {platform for platform, _ in versions}
+        macs = {device.mac_address for device in devices}
+        for cable in list(self.get_all(self.cable)):
+            if cable.mac_address not in macs or cable.upstream_mac_address not in macs:
+                self.remove(cable)
         location_types = {location.location_type__name for location in self.get_all(self.location)}
         location_types |= self.required_location_types
         for model, keep in (

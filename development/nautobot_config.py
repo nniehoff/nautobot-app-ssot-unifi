@@ -138,6 +138,7 @@ PLUGINS_CONFIG = {
         "exclude_client_uplinks": [
             uplink for uplink in os.getenv("UNIFI_EXCLUDE_CLIENT_UPLINKS", "").split(",") if uplink
         ],
+        "import_cables": is_truthy(os.getenv("UNIFI_IMPORT_CABLES", "true")),
         "import_clients": is_truthy(os.getenv("UNIFI_IMPORT_CLIENTS", "true")),
         "import_wireless": is_truthy(os.getenv("UNIFI_IMPORT_WIRELESS", "true")),
         "import_wireless_clients": is_truthy(os.getenv("UNIFI_IMPORT_WIRELESS_CLIENTS", "true")),

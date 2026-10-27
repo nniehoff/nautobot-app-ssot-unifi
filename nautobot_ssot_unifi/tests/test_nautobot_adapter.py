@@ -1,8 +1,10 @@
 """Test Nautobot adapter."""
 
+from diffsync.exceptions import ObjectNotCreated
 from django.contrib.contenttypes.models import ContentType
 from nautobot.core.testing import TransactionTestCase
 from nautobot.dcim.models import (
+    Cable,
     Controller,
     ControllerManagedDeviceGroup,
     Device,
@@ -18,7 +20,7 @@ from nautobot.wireless.models import ControllerManagedDeviceGroupWirelessNetwork
 
 from nautobot_ssot_unifi.constants import SYSTEM_OF_RECORD
 from nautobot_ssot_unifi.diffsync.adapters.nautobot import UniFiNautobotAdapter
-from nautobot_ssot_unifi.diffsync.models.base import DeviceModel
+from nautobot_ssot_unifi.diffsync.models.base import CableModel, DeviceModel
 from nautobot_ssot_unifi.jobs import UniFiDataSource
 from nautobot_ssot_unifi.utils.unifi import get_controller_name
 
@@ -35,9 +37,10 @@ class TestUniFiNautobotAdapterTestCase(TransactionTestCase):
         location_ct = ContentType.objects.get_for_model(Location)
         group_ct = ContentType.objects.get_for_model(ControllerManagedDeviceGroup)
         wireless_ct = ContentType.objects.get_for_model(WirelessNetwork)
+        cable_ct = ContentType.objects.get_for_model(Cable)
         for key, content_types in (
-            ("system_of_record", [device_ct, wireless_ct]),
-            ("unifi_controller", [device_ct, location_ct, group_ct, wireless_ct]),
+            ("system_of_record", [cable_ct, device_ct, wireless_ct]),
+            ("unifi_controller", [cable_ct, device_ct, location_ct, group_ct, wireless_ct]),
             ("unifi_site", [location_ct, group_ct]),
         ):
             custom_field, _ = CustomField.objects.get_or_create(
@@ -52,6 +55,8 @@ class TestUniFiNautobotAdapterTestCase(TransactionTestCase):
 
         status, _ = Status.objects.get_or_create(name="Active")
         status.content_types.add(device_ct, ContentType.objects.get_for_model(Interface))
+        connected, _ = Status.objects.get_or_create(name="Connected")
+        connected.content_types.add(ContentType.objects.get_for_model(Cable))
         role, _ = Role.objects.get_or_create(name="Router")
         role.content_types.add(device_ct)
         location_type, _ = LocationType.objects.get_or_create(name="Site")
@@ -175,3 +180,49 @@ class TestUniFiNautobotAdapterTestCase(TransactionTestCase):
             {"UniFi Site__Home", "UniFi Site__Manual"},
             {obj.get_unique_id() for obj in self.nautobot.get_all("wirelessnetworkassignment")},
         )
+
+    def test_cable_create_move_and_conflict(self):
+        """Cables are created with their Interfaces, move with the client, and never replace a hand-made Cable."""
+        DeviceModel.create(
+            adapter=self.nautobot,
+            ids={"mac_address": "00:11:22:33:44:aa"},
+            attrs={
+                "name": "new-client",
+                "location__name": "Test",
+                "role__name": "Client",
+                "device_type__model": "Test Model",
+                "device_type__manufacturer__name": "Test Manufacturer",
+                "status__name": "Active",
+                "system_of_record": SYSTEM_OF_RECORD,
+                "unifi_controller": get_controller_name(),
+            },
+        )
+        ids = {"mac_address": "00:11:22:33:44:aa"}
+        attrs = {"interface": "eth0", "upstream_mac_address": "00:11:22:33:44:01", "upstream_interface": "Port 3"}
+        CableModel.create(adapter=self.nautobot, ids=ids, attrs=attrs)
+        switch = Device.objects.get(name="unifi-device")
+        self.assertIsNotNone(switch.interfaces.get(name="Port 3").cable)
+
+        self.nautobot.load()
+        cable = self.nautobot.get("cable", "00:11:22:33:44:aa")
+        self.assertEqual(("eth0", "Port 3"), (cable.interface, cable.upstream_interface))
+
+        cable.update({"upstream_interface": "Port 4"})
+        self.assertIsNone(switch.interfaces.get(name="Port 3").cable)
+        self.assertIsNotNone(switch.interfaces.get(name="Port 4").cable)
+
+        Cable.objects.create(
+            termination_a=switch.interfaces.get(name="Port 3"),
+            termination_b=Interface.objects.get(device__name="other-controller-device", name="eth0"),
+            status=Status.objects.get(name="Connected"),
+        )
+        with self.assertRaises(ObjectNotCreated):
+            CableModel.create(
+                adapter=self.nautobot,
+                ids={"mac_address": "00:11:22:33:44:02"},
+                attrs={
+                    "interface": "mgmt",
+                    "upstream_mac_address": "00:11:22:33:44:01",
+                    "upstream_interface": "Port 3",
+                },
+            )

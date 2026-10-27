@@ -2,12 +2,15 @@
 
 from itertools import chain
 
+from diffsync.exceptions import ObjectAlreadyExists
 from django.db.models import Q
-from nautobot.dcim.models import Device
+from nautobot.dcim.models import Cable, Device, Interface
 from nautobot_ssot.contrib import NautobotAdapter
 
+from nautobot_ssot_unifi.constants import SYSTEM_OF_RECORD
 from nautobot_ssot_unifi.diffsync.models.base import (
     TOP_LEVEL,
+    CableModel,
     ControllerManagedDeviceGroupModel,
     ControllerModel,
     DeviceModel,
@@ -22,6 +25,7 @@ from nautobot_ssot_unifi.diffsync.models.base import (
     WirelessNetworkModel,
     get_device_mac,
 )
+from nautobot_ssot_unifi.utils.unifi import get_controller_name
 
 
 class UniFiNautobotAdapter(NautobotAdapter):
@@ -39,6 +43,7 @@ class UniFiNautobotAdapter(NautobotAdapter):
     wirelessnetwork = WirelessNetworkModel
     wirelessnetworkassignment = WirelessNetworkAssignmentModel
     device = DeviceModel
+    cable = CableModel
 
     top_level = TOP_LEVEL
 
@@ -58,9 +63,14 @@ class UniFiNautobotAdapter(NautobotAdapter):
         self.unifi_macs = frozenset(unifi_macs)
         self.adopt_pks = list(adopt_pks)
         self.sites = sites
+        # Primary keys of the loaded Devices: only their Cables are loaded.
+        self.device_pks = set()
 
     def _load_objects(self, diffsync_model):
-        """Load Devices from the selected sites, plus the Devices being adopted."""
+        """Load Devices from the selected sites, plus the Devices being adopted, and their Cables."""
+        if diffsync_model is CableModel:
+            self._load_cables()
+            return
         if diffsync_model is not DeviceModel:
             super()._load_objects(diffsync_model)
             return
@@ -74,6 +84,45 @@ class UniFiNautobotAdapter(NautobotAdapter):
         parameter_names = DeviceModel.get_synced_attributes()
         for device in chain(queryset, adopted):
             self._load_single_object(device, DeviceModel, parameter_names)
+            self.device_pks.add(device.pk)
+
+    def _load_cables(self):
+        """Load the Interface-to-Interface Cables synced from this controller whose downstream Device was loaded.
+
+        Cables of Devices in sites left out of `sites` are not loaded, so they are never deleted.
+        """
+        cables = Cable.objects.filter(
+            _custom_field_data__system_of_record=SYSTEM_OF_RECORD,
+            _custom_field_data__unifi_controller=get_controller_name(),
+        )
+        for cable in cables:
+            # Nautobot 3 keeps terminations in a separate table, so filter on their type here rather than in SQL.
+            upstream, downstream = cable.termination_a, cable.termination_b
+            if not isinstance(upstream, Interface) or not isinstance(downstream, Interface):
+                continue
+            if downstream.device_id not in self.device_pks:
+                continue
+            mac = get_device_mac(downstream.device, self.unifi_macs)
+            upstream_mac = get_device_mac(upstream.device, self.unifi_macs)
+            if mac is None or upstream_mac is None:
+                continue
+            try:
+                self.add(
+                    CableModel(
+                        mac_address=mac,
+                        interface=downstream.name,
+                        upstream_mac_address=upstream_mac,
+                        upstream_interface=upstream.name,
+                        pk=cable.pk,
+                    )
+                )
+            except ObjectAlreadyExists:
+                self.job.logger.warning(
+                    "%s has more than one Cable synced from UniFi; only %s is managed.",
+                    downstream.device,
+                    self.get(CableModel, mac).upstream_interface,
+                    extra={"object": cable},
+                )
 
     def _handle_single_parameter(self, parameters, parameter_name, database_object, diffsync_model):
         """Read a Device's `mac_address` from its Interfaces, since Device has no such field."""

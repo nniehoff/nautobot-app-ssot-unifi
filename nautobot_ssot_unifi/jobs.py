@@ -7,6 +7,8 @@ from nautobot_ssot_unifi.diffsync.adapters.nautobot import UniFiNautobotAdapter
 from nautobot_ssot_unifi.diffsync.adapters.unifi import UniFiAdapter
 from nautobot_ssot_unifi.utils.nautobot import (
     find_devices_by_mac,
+    find_interface,
+    find_unsynced_cable,
     find_unsynced_device_group,
     find_unsynced_location,
     find_unsynced_wireless_network,
@@ -62,7 +64,7 @@ class UniFiDataSource(DataSource):
     def load_target_adapter(self):
         """Load data from Nautobot into DiffSync models.
 
-        Before loading, handle Locations, device groups, Wireless Networks, and Devices that already exist in Nautobot but were not synced
+        Before loading, handle Locations, device groups, Wireless Networks, Devices, and Cables that already exist in Nautobot but were not synced
         from this controller. After loading, keep Nautobot's values for the fields the sync only sets on
         create, and drop the shared objects nothing needs any more.
         """
@@ -70,6 +72,8 @@ class UniFiDataSource(DataSource):
         self.handle_existing_wireless()
         unifi_macs = {device.mac_address for device in self.source_adapter.get_all("device")}
         adopt_pks = self.handle_existing_devices(unifi_macs)
+        self.source_adapter.prune_unused()
+        self.handle_existing_cables()
         self.target_adapter = UniFiNautobotAdapter(
             job=self,
             sync=self.sync,
@@ -130,6 +134,40 @@ class UniFiDataSource(DataSource):
                     extra={"object": existing},
                 )
                 self.source_adapter.remove(wireless_network)
+
+    def handle_existing_cables(self):
+        """Leave Interfaces that already have a Cable the sync did not create alone, with a warning.
+
+        A Cable made by hand between the same two Interfaces UniFi reports is kept as is; any other is
+        reported as a conflict to fix in Nautobot or UniFi.
+        """
+        for cable in list(self.source_adapter.get_all("cable")):
+            interfaces = [
+                find_interface(cable.upstream_mac_address, cable.upstream_interface),
+                find_interface(cable.mac_address, cable.interface),
+            ]
+            existing = next(filter(None, (find_unsynced_cable(interface) for interface in interfaces)), None)
+            if existing is None:
+                continue
+            description = (
+                f"{self.source_adapter.get('device', cable.upstream_mac_address).name} {cable.upstream_interface} "
+                f"to {self.source_adapter.get('device', cable.mac_address).name} {cable.interface}"
+            )
+            if {existing.termination_a_id, existing.termination_b_id} == {
+                interface.pk for interface in interfaces if interface
+            }:
+                self.logger.info(
+                    "Cable %s already connects %s; leaving it as is.", existing, description, extra={"object": existing}
+                )
+            else:
+                self.logger.warning(
+                    "Skipping the Cable from %s that UniFi reports: Cable %s, not synced from UniFi, is already on "
+                    "one of these Interfaces.",
+                    description,
+                    existing,
+                    extra={"object": existing},
+                )
+            self.source_adapter.remove(cable)
 
     def handle_existing_devices(self, unifi_macs) -> list:
         """Apply the `existing_devices` choice to Devices that share a MAC with UniFi but are not synced from here.

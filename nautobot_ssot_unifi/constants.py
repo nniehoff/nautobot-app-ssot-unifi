@@ -12,6 +12,9 @@ DEVICE_INTERFACE_NAME = "mgmt"
 CLIENT_INTERFACE_NAME = "eth0"
 CLIENT_ROLE = "Client"
 
+# Status of the Cables the sync creates.
+CABLE_STATUS = "Connected"
+
 # Platform of each kind of UniFi device, by the `type` UniFi reports. UniFi
 # releases firmware per kind, so each gets its own Software Versions.
 PLATFORM_MAP = {
