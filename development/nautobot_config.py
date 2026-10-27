@@ -140,6 +140,8 @@ PLUGINS_CONFIG = {
         ],
         "import_cables": is_truthy(os.getenv("UNIFI_IMPORT_CABLES", "true")),
         "import_clients": is_truthy(os.getenv("UNIFI_IMPORT_CLIENTS", "true")),
+        "import_ip_addresses": is_truthy(os.getenv("UNIFI_IMPORT_IP_ADDRESSES", "true")),
+        "import_vlans": is_truthy(os.getenv("UNIFI_IMPORT_VLANS", "true")),
         "import_wireless": is_truthy(os.getenv("UNIFI_IMPORT_WIRELESS", "true")),
         "import_wireless_clients": is_truthy(os.getenv("UNIFI_IMPORT_WIRELESS_CLIENTS", "true")),
         "include_client_networks": [
@@ -148,6 +150,7 @@ PLUGINS_CONFIG = {
         "include_client_uplinks": [
             uplink for uplink in os.getenv("UNIFI_INCLUDE_CLIENT_UPLINKS", "").split(",") if uplink
         ],
+        "namespace": os.getenv("UNIFI_NAMESPACE", "Global"),
         "sites": [site for site in os.getenv("UNIFI_SITES", "").split(",") if site],
         "unifi_host": os.getenv("UNIFI_HOST", ""),
         "unifi_password": os.getenv("UNIFI_PASSWORD", ""),

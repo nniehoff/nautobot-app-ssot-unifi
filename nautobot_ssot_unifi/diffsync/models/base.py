@@ -22,6 +22,7 @@ from nautobot.dcim.models import (
     SoftwareVersion,
 )
 from nautobot.extras.models import Role, Status
+from nautobot.ipam.models import VLAN, IPAddress, IPAddressToInterface, Namespace, Prefix, VLANGroup
 from nautobot.wireless.models import ControllerManagedDeviceGroupWirelessNetworkAssignment, WirelessNetwork
 from nautobot_ssot.contrib import CustomFieldAnnotation, NautobotModel
 from typing_extensions import TypedDict
@@ -33,8 +34,8 @@ from nautobot_ssot_unifi.constants import (
     DEVICE_INTERFACE_NAME,
     SYSTEM_OF_RECORD,
 )
-from nautobot_ssot_unifi.utils.nautobot import find_devices_by_mac
-from nautobot_ssot_unifi.utils.unifi import get_controller_name, get_selected_sites
+from nautobot_ssot_unifi.utils.nautobot import find_devices_by_mac, find_vlan
+from nautobot_ssot_unifi.utils.unifi import get_controller_name, get_namespace, get_selected_sites
 
 # Load and sync order of the models in both adapters: every model after the ones it refers to.
 TOP_LEVEL = [
@@ -49,7 +50,13 @@ TOP_LEVEL = [
     "role",
     "platform",
     "softwareversion",
+    "vlangroup",
+    "vlan",
     "device",
+    "interface",
+    "prefix",
+    "ipaddress",
+    "ipassignment",
     "cable",
 ]
 
@@ -347,6 +354,68 @@ class WirelessNetworkAssignmentModel(NautobotModel):
         )
 
 
+class VLANGroupModel(NautobotModel):
+    """DiffSync model for the VLAN Group holding a UniFi site's VLANs, in the site's Location.
+
+    Like Locations, a group is identified by its site's short name, and named after the site.
+    """
+
+    # Never delete VLAN Groups, like Locations: a site removed from `sites` keeps its group.
+    model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
+
+    _model = VLANGroup
+    _modelname = "vlangroup"
+    _identifiers = ("unifi_site", "unifi_controller")
+    _attributes = ("name", "location__name")
+    _children = {}
+
+    unifi_site: Annotated[str, CustomFieldAnnotation(key="unifi_site")]
+    unifi_controller: Annotated[str, CustomFieldAnnotation(key="unifi_controller")]
+    name: str
+    location__name: Optional[str] = None
+
+    @classmethod
+    def _get_queryset(cls):
+        """Load only VLAN Groups synced from the selected sites of this controller."""
+        queryset = (
+            super()
+            ._get_queryset()
+            .filter(_custom_field_data__unifi_controller=get_controller_name())
+            .exclude(_custom_field_data__unifi_site__isnull=True)
+            .exclude(_custom_field_data__unifi_site=None)
+        )
+        selected = get_selected_sites()
+        if selected:
+            queryset = queryset.filter(Q(_custom_field_data__unifi_site__in=selected) | Q(name__in=selected))
+        return queryset
+
+
+class VLANModel(NautobotModel):
+    """DiffSync model for the VLAN of a UniFi network, in its site's VLAN Group.
+
+    Status is only set when the sync creates the VLAN. VLANs are never deleted: a network removed from UniFi may
+    still be configured elsewhere.
+    """
+
+    model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
+
+    _model = VLAN
+    _modelname = "vlan"
+    _identifiers = ("vid", "vlan_group__name")
+    _attributes = ("name", "status__name")
+    _children = {}
+
+    vid: int
+    vlan_group__name: str
+    name: str
+    status__name: str
+
+    @classmethod
+    def _get_queryset(cls):
+        """Load only VLANs in VLAN Groups synced from the selected sites of this controller."""
+        return super()._get_queryset().filter(vlan_group__in=VLANGroupModel._get_queryset())
+
+
 class DeviceModel(NautobotModel):
     """DiffSync model for UniFi devices and clients.
 
@@ -462,6 +531,32 @@ def get_device_mac(device: Device, preferred: frozenset = frozenset()) -> Option
     return next((mac for mac in macs if mac in preferred), macs[0] if macs else None)
 
 
+def get_or_create_interface(mac: str, name: str, interface_type: str = InterfaceTypeChoices.TYPE_OTHER) -> Interface:
+    """Get or create the named Interface of the Device with a MAC address.
+
+    Args:
+        mac (str): Lowercase MAC address identifying the Device.
+        name (str): Interface name.
+        interface_type (str): Type of the Interface if it is created.
+
+    Returns:
+        Interface: The Interface, created if the Device had none by that name.
+    """
+    devices = find_devices_by_mac([mac]).get(mac, [])
+    if len(devices) != 1:
+        raise ObjectCrudException(f"Expected one Device with MAC {mac}, found {len(devices)}.")
+    interface = Interface.objects.filter(device=devices[0], name=name).first()
+    if interface is None:
+        interface = Interface(
+            device=devices[0],
+            name=name,
+            type=interface_type,
+            status=Status.objects.get(name="Active"),
+        )
+        interface.validated_save()
+    return interface
+
+
 def is_synced_cable(cable: Cable) -> bool:
     """Whether a Cable was created by a sync from this controller.
 
@@ -500,23 +595,6 @@ class CableModel(NautobotModel):
     upstream_interface: str
 
     @staticmethod
-    def _get_interface(mac: str, name: str) -> Interface:
-        """Get or create the named Interface of the Device with a MAC address."""
-        devices = find_devices_by_mac([mac]).get(mac, [])
-        if len(devices) != 1:
-            raise ObjectCrudException(f"Expected one Device with MAC {mac}, found {len(devices)}.")
-        interface = Interface.objects.filter(device=devices[0], name=name).first()
-        if interface is None:
-            interface = Interface(
-                device=devices[0],
-                name=name,
-                type=InterfaceTypeChoices.TYPE_OTHER,
-                status=Status.objects.get(name="Active"),
-            )
-            interface.validated_save()
-        return interface
-
-    @staticmethod
     def _free(interface: Interface):
         """Remove a Cable the sync created from an Interface; refuse to touch any other Cable."""
         cable = interface.cable
@@ -533,8 +611,8 @@ class CableModel(NautobotModel):
     def _connect(cls, ids: dict, attrs: dict) -> Cable:
         """Create the Cable between the two Interfaces, creating them if needed."""
         with transaction.atomic():
-            upstream = cls._get_interface(attrs["upstream_mac_address"], attrs["upstream_interface"])
-            downstream = cls._get_interface(ids["mac_address"], attrs["interface"])
+            upstream = get_or_create_interface(attrs["upstream_mac_address"], attrs["upstream_interface"])
+            downstream = get_or_create_interface(ids["mac_address"], attrs["interface"])
             cls._free(upstream)
             cls._free(downstream)
             cable = Cable(
@@ -584,3 +662,241 @@ class CableModel(NautobotModel):
         except ValidationError as error:
             raise ObjectNotDeleted(error) from error
         return super(NautobotModel, self).delete()
+
+
+class PrefixModel(NautobotModel):
+    """DiffSync model for the subnet of each UniFi network, in the sync's Namespace.
+
+    Status is only set when the sync creates the Prefix.
+    """
+
+    # Shared with IPAM and other Systems of Record: create the subnets UniFi
+    # uses, never change or delete a Prefix otherwise.
+    model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
+
+    _model = Prefix
+    _modelname = "prefix"
+    _identifiers = ("network", "prefix_length", "namespace__name")
+    _attributes = ("status__name",)
+    _children = {}
+
+    network: str
+    prefix_length: int
+    namespace__name: str
+    status__name: str
+
+    @classmethod
+    def _get_queryset(cls):
+        """Load only Prefixes in the sync's Namespace."""
+        return super()._get_queryset().filter(namespace__name=get_namespace())
+
+    @classmethod
+    def create(cls, adapter, ids, attrs):
+        """Create the Prefix; Nautobot needs the whole prefix at once to compute its range and parent."""
+        try:
+            prefix = Prefix(
+                prefix=f"{ids['network']}/{ids['prefix_length']}",
+                namespace=Namespace.objects.get(name=ids["namespace__name"]),
+                status=Status.objects.get(name=attrs["status__name"]),
+            )
+            prefix.validated_save()
+        except (Namespace.DoesNotExist, Status.DoesNotExist, ValidationError) as error:
+            raise ObjectNotCreated(error) from error
+        # Skip NautobotModel.create, which would create the Prefix again from ids and attrs.
+        model = super(NautobotModel, cls).create(adapter, ids, attrs)
+        model.pk = prefix.pk
+        return model
+
+
+class IPAddressModel(NautobotModel):
+    """DiffSync model for the IP address of a UniFi device or client, identified by address and Namespace.
+
+    The mask comes from the UniFi network containing the address, else the narrowest Prefix in Nautobot. Status is
+    only set when the sync creates the IP Address. The sync only changes or deletes IP Addresses it created; existing
+    ones are assigned to Interfaces as they are (see `UniFiDataSource.handle_existing_ip_addresses()`).
+    """
+
+    _model = IPAddress
+    _modelname = "ipaddress"
+    _identifiers = ("host", "parent__namespace__name")
+    _attributes = (
+        "mask_length",
+        "status__name",
+        "type",
+        "system_of_record",
+        "ssot_last_synchronized",
+        "unifi_controller",
+    )
+    _children = {}
+
+    host: str
+    parent__namespace__name: str
+    mask_length: int
+    status__name: str
+    type: str
+
+    system_of_record: Annotated[Optional[str], CustomFieldAnnotation(name="system_of_record")] = None
+    ssot_last_synchronized: Annotated[Optional[str], CustomFieldAnnotation(name="ssot_last_synchronized")] = None
+    unifi_controller: Annotated[Optional[str], CustomFieldAnnotation(name="unifi_controller")] = None
+
+    @classmethod
+    def _get_queryset(cls):
+        """Load only IP Addresses synced from this controller in the sync's Namespace.
+
+        UniFiNautobotAdapter narrows this to the IP Addresses of the loaded Devices when `sites` is set.
+        """
+        return (
+            super()
+            ._get_queryset()
+            .filter(
+                _custom_field_data__system_of_record=SYSTEM_OF_RECORD,
+                _custom_field_data__unifi_controller=get_controller_name(),
+                parent__namespace__name=get_namespace(),
+            )
+        )
+
+    @classmethod
+    def create(cls, adapter, ids, attrs):
+        """Create the IP Address under the narrowest Prefix containing it in the Namespace."""
+        try:
+            ip_address = IPAddress(
+                address=f"{ids['host']}/{attrs['mask_length']}",
+                namespace=Namespace.objects.get(name=ids["parent__namespace__name"]),
+                status=Status.objects.get(name=attrs["status__name"]),
+                type=attrs["type"],
+                _custom_field_data={
+                    key: attrs[key]
+                    for key in ("system_of_record", "ssot_last_synchronized", "unifi_controller")
+                    if attrs.get(key) is not None
+                },
+            )
+            ip_address.validated_save()
+        except (Namespace.DoesNotExist, Status.DoesNotExist, ValidationError) as error:
+            raise ObjectNotCreated(error) from error
+        # Skip NautobotModel.create, which would create the IP Address again from ids and attrs.
+        model = super(NautobotModel, cls).create(adapter, ids, attrs)
+        model.pk = ip_address.pk
+        return model
+
+
+class IPAddressAssignmentModel(NautobotModel):
+    """DiffSync model for an IP address on the Interface of a UniFi device or client.
+
+    Identified by the Device's MAC address and the address; moving the address to another Interface of the same
+    Device updates the assignment.
+    """
+
+    _model = IPAddressToInterface
+    _modelname = "ipassignment"
+    _identifiers = ("mac_address", "host")
+    _attributes = ("interface",)
+    _children = {}
+
+    mac_address: str
+    host: str
+    interface: str
+
+    @staticmethod
+    def _get_ip_address(host: str) -> IPAddress:
+        """The IP Address in the sync's Namespace."""
+        ip_address = IPAddress.objects.filter(host=host, parent__namespace__name=get_namespace()).first()
+        if ip_address is None:
+            raise ObjectCrudException(f"IP Address {host} not found in Namespace {get_namespace()}.")
+        return ip_address
+
+    @classmethod
+    def create(cls, adapter, ids, attrs):
+        """Assign the IP Address to the Interface, creating the Interface if needed."""
+        try:
+            with transaction.atomic():
+                assignment = IPAddressToInterface(
+                    ip_address=cls._get_ip_address(ids["host"]),
+                    interface=get_or_create_interface(ids["mac_address"], attrs["interface"]),
+                )
+                assignment.validated_save()
+        except (ObjectCrudException, ValidationError) as error:
+            raise ObjectNotCreated(error) from error
+        model = super(NautobotModel, cls).create(adapter, ids, attrs)
+        model.pk = assignment.pk
+        return model
+
+    def update(self, attrs):
+        """Move the IP Address to the Interface UniFi now reports it on."""
+        try:
+            with transaction.atomic():
+                assignment = IPAddressToInterface.objects.get(pk=self.pk)
+                assignment.interface = get_or_create_interface(self.mac_address, attrs["interface"])
+                assignment.validated_save()
+        except (IPAddressToInterface.DoesNotExist, ObjectCrudException, ValidationError) as error:
+            raise ObjectNotUpdated(error) from error
+        return super(NautobotModel, self).update(attrs)
+
+    def delete(self):
+        """Delete the assignment, unless deleting its IP Address or Device earlier in the sync already did."""
+        if not self._model.objects.filter(pk=self.pk).exists():
+            # Skip NautobotModel.delete, which fails on a missing object.
+            return super(NautobotModel, self).delete()
+        return super().delete()
+
+
+class InterfaceModel(NautobotModel):
+    """DiffSync model for the 802.1Q settings of a UniFi switch port, identified by its Device's MAC and its name.
+
+    VLANs are compared by VLAN ID and set to the VLAN `find_vlan()` picks for the Device's Location, so a VLAN made by
+    hand is used when it fits. Type is only set when the sync creates the Interface. Interfaces are never deleted.
+    """
+
+    model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
+
+    _model = Interface
+    _modelname = "interface"
+    _identifiers = ("mac_address", "name")
+    _attributes = ("type", "mode", "untagged_vid", "tagged_vids")
+    _children = {}
+
+    mac_address: str
+    name: str
+    type: str
+    mode: Optional[str] = None
+    untagged_vid: Optional[int] = None
+    tagged_vids: List[int] = []
+
+    @staticmethod
+    def _get_vlan(vid: int, interface: Interface) -> VLAN:
+        """The VLAN with an ID that the Interface's Device can use."""
+        vlan = find_vlan(vid, interface.device.location)
+        if vlan is None:
+            raise ObjectCrudException(f"No VLAN {vid} available to {interface.device} in {interface.device.location}.")
+        return vlan
+
+    @classmethod
+    def _apply(cls, interface: Interface, attrs: dict):
+        """Set the Interface's mode and VLANs."""
+        interface.mode = attrs.get("mode") or ""
+        untagged_vid = attrs.get("untagged_vid")
+        interface.untagged_vlan = cls._get_vlan(untagged_vid, interface) if untagged_vid else None
+        interface.validated_save()
+        if interface.mode == "tagged":
+            interface.tagged_vlans.set([cls._get_vlan(vid, interface) for vid in attrs.get("tagged_vids") or []])
+
+    @classmethod
+    def create(cls, adapter, ids, attrs):
+        """Create the Interface if the Device has none by that name, and set its mode and VLANs."""
+        try:
+            with transaction.atomic():
+                interface = get_or_create_interface(ids["mac_address"], ids["name"], attrs["type"])
+                cls._apply(interface, attrs)
+        except (ObjectCrudException, ValidationError) as error:
+            raise ObjectNotCreated(error) from error
+        model = super(NautobotModel, cls).create(adapter, ids, attrs)
+        model.pk = interface.pk
+        return model
+
+    def update(self, attrs):
+        """Set the Interface's mode and VLANs to what UniFi now reports."""
+        try:
+            with transaction.atomic():
+                self._apply(Interface.objects.get(pk=self.pk), {**self.get_attrs(), **attrs})
+        except (Interface.DoesNotExist, ObjectCrudException, ValidationError) as error:
+            raise ObjectNotUpdated(error) from error
+        return super(NautobotModel, self).update(attrs)

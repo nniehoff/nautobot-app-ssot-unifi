@@ -1,11 +1,19 @@
 """Utility functions for working with UniFi."""
 
+from collections import Counter
 from typing import Optional
 
 from django.conf import settings
 from pyunifi.controller import Controller
 
-from nautobot_ssot_unifi.constants import DEFAULT_PLATFORM, PLATFORM_MAP
+from nautobot_ssot_unifi.constants import (
+    DEFAULT_NAMESPACE,
+    DEFAULT_PLATFORM,
+    DEFAULT_VLAN_ID,
+    PLATFORM_MAP,
+    PORT_MEDIA_PREFIXES,
+    VLAN_NETWORK_PURPOSES,
+)
 
 PLUGIN_CFG = settings.PLUGINS_CONFIG["nautobot_ssot_unifi"]
 
@@ -36,6 +44,117 @@ def get_controller_name() -> str:
         str: Controller name.
     """
     return PLUGIN_CFG.get("controller_name") or PLUGIN_CFG["unifi_host"]
+
+
+def get_namespace() -> str:
+    """Namespace of the Prefixes and IP Addresses the sync creates and matches (`namespace`, default "Global").
+
+    Returns:
+        str: Namespace name.
+    """
+    return PLUGIN_CFG.get("namespace") or DEFAULT_NAMESPACE
+
+
+def get_networks(conn: Controller) -> list:
+    """Read the networks of the site the client is pointed at.
+
+    pyunifi has no method for networks, so this reads the legacy `rest/networkconf` endpoint directly.
+
+    Args:
+        conn (Controller): Connection to UniFi controller.
+
+    Returns:
+        list: Networks, each with an `ip_subnet` such as "192.168.1.1/24" (gateway address and length) if it has one.
+    """
+    return conn._api_read("rest/networkconf")  # pylint: disable=protected-access
+
+
+def get_port_profiles(conn: Controller) -> dict:
+    """Read the port profiles of the site the client is pointed at.
+
+    Args:
+        conn (Controller): Connection to UniFi controller.
+
+    Returns:
+        dict: Port profiles from the legacy `rest/portconf` endpoint, by ID.
+    """
+    profiles = conn._api_read("rest/portconf")  # pylint: disable=protected-access
+    return {profile.get("_id") or profile.get("id"): profile for profile in profiles}
+
+
+def get_network_vlans(networks: list) -> dict:
+    """VLAN ID of each UniFi network that can be on a switch port.
+
+    Args:
+        networks (list): Networks from `get_networks()`.
+
+    Returns:
+        dict: Network ID to VLAN ID; the network without a VLAN, the default one, is VLAN 1.
+    """
+    vlans = {}
+    for network in networks:
+        if network.get("purpose") not in VLAN_NETWORK_PURPOSES:
+            continue
+        vlan = network.get("vlan") if network.get("vlan_enabled") else None
+        vlans[network.get("_id") or network.get("id")] = int(vlan) if vlan else DEFAULT_VLAN_ID
+    return vlans
+
+
+def get_default_port_names(port_table: list) -> dict:
+    """Name UniFi gives each switch port until it is renamed: "SFP+ 2" for fiber ports, else "Port <n>".
+
+    Args:
+        port_table (list): A device's `port_table`.
+
+    Returns:
+        dict: Port number to default name.
+    """
+    counts = Counter()
+    names = {}
+    for port in sorted(port_table, key=lambda port: port["port_idx"]):
+        media = port.get("media")
+        if media in PORT_MEDIA_PREFIXES:
+            counts[media] += 1
+            names[port["port_idx"]] = f"{media} {counts[media]}"
+        else:
+            names[port["port_idx"]] = f"Port {port['port_idx']}"
+    return names
+
+
+def get_port_switching(port: dict, profiles: dict, network_vlans: dict) -> Optional[tuple]:
+    """802.1Q mode and VLANs of a switch port, from its port profile if it has one, else its own settings.
+
+    Ports block, allow all, or allow all but some tagged VLANs (`tagged_vlan_mgmt`); older controllers set
+    `forward` to "native", "all", or "customize" with a list of tagged networks instead. The port's native
+    network is its untagged VLAN.
+
+    Args:
+        port (dict): Port from a device's `port_table`.
+        profiles (dict): Port profiles from `get_port_profiles()`.
+        network_vlans (dict): Network ID to VLAN ID, from `get_network_vlans()`.
+
+    Returns:
+        Optional[tuple]: (mode, untagged VLAN ID or None, sorted tagged VLAN IDs); mode is None for a disabled
+            port. None when the settings are not understood.
+    """
+    config = profiles.get(port.get("portconf_id")) or port
+    management, forward = config.get("tagged_vlan_mgmt"), config.get("forward")
+    if forward == "disabled":
+        return (None, None, [])
+    untagged = network_vlans.get(config.get("native_networkconf_id"))
+    if management == "block_all" or (management is None and forward == "native"):
+        return ("access", untagged, [])
+    if management == "auto" or (management is None and forward == "all"):
+        return ("tagged-all", untagged, [])
+    if management == "custom":
+        excluded = set(config.get("excluded_networkconf_ids") or [])
+        tagged = {vlan for network_id, vlan in network_vlans.items() if network_id not in excluded}
+    elif management is None and forward == "customize":
+        tagged = {network_vlans[i] for i in config.get("tagged_networkconf_ids") or [] if i in network_vlans}
+    else:
+        return None
+    tagged.discard(untagged)
+    return ("tagged", untagged, sorted(tagged))
 
 
 def get_sites(conn: Controller) -> dict:

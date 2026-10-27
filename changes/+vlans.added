@@ -1,0 +1,1 @@
+Added syncing of UniFi networks as VLANs and of switch ports' 802.1Q mode and VLANs, with the new `import_vlans` setting.

@@ -33,10 +33,10 @@ The app creates these Custom Fields when Nautobot starts. The sync uses them to 
 
 | Key | Label | Applies to | Purpose |
 | --- | ----- | ---------- | ------- |
-| `system_of_record` | System of Record | Cable, Device, Interface, IP Address, Wireless Network | Set to `UniFi SSoT` on every Cable, Device, and Wireless Network the sync creates. |
+| `system_of_record` | System of Record | Cable, Device, Interface, IP Address, Wireless Network | Set to `UniFi SSoT` on every Cable, Device, IP Address, and Wireless Network the sync creates. |
 | `ssot_last_synchronized` | Last sync from System of Record | Cable, Device, Interface, IP Address, Wireless Network | Date of the last sync that touched the object. |
-| `unifi_controller` | UniFi Controller | Cable, Device, Location, Controller Managed Device Group, Wireless Network | The `controller_name` setting of the controller the object came from. |
-| `unifi_site` | UniFi Site | Location, Controller Managed Device Group | The site's short name, e.g. `default`. Identifies the Location and group, so renaming a site in UniFi renames them. |
+| `unifi_controller` | UniFi Controller | Cable, Device, IP Address, Location, Controller Managed Device Group, VLAN Group, Wireless Network | The `controller_name` setting of the controller the object came from. |
+| `unifi_site` | UniFi Site | Location, Controller Managed Device Group, VLAN Group | The site's short name, e.g. `default`. Identifies the Location and groups, so renaming a site in UniFi renames them. |
 
 Devices are identified by MAC address, which Nautobot keeps on Interfaces. Each Device the sync creates gets one Interface holding its UniFi MAC: `mgmt` (management only) for UniFi network devices, `eth0` for clients. Renaming a device or client in UniFi renames the Device in Nautobot. A Device with several MAC addresses is matched on its management Interfaces first, then by Interface name.
 
@@ -50,7 +50,7 @@ Each UniFi network device gets a Platform for its kind (`UniFi Access Point`, `U
 
 With `import_cables` on (the default), the sync creates a Cable from each wired UniFi device and client to the switch port UniFi reports it on: the upstream switch port is the Cable's A side, the device or client its B side. A Cable moves when the device or client moves to another port, and is deleted when either end leaves the sync.
 
-Ports are matched to Interfaces by name: the port's name in UniFi (e.g. `SFP 1`), then `Port 8`, then `8`. A port with no matching Interface gets a new `Port 8` Interface, and an access point an `eth0` Interface. Clients are cabled from the Interface holding their MAC address. Switch Interfaces named `Port <n>`, as UniFi names ports by default, are used as they are.
+Ports are matched to Interfaces by name: the port's name in UniFi (e.g. `Uplink`), then the name UniFi gives it by default (`Port 8`, or `SFP+ 1` for fiber ports), then `Port 8`, then `8`. A port with no matching Interface gets a new Interface with the default name, and an access point an `eth0` Interface. Clients are cabled from the Interface holding their MAC address. Switch Interfaces named `Port <n>`, as UniFi names ports by default, are used as they are.
 
 Some links get no Cable:
 
@@ -58,6 +58,33 @@ Some links get no Cable:
 - Ports with several clients, such as clients behind an unmanaged switch or a host with virtual machines. When one of them is a UniFi device, its Cable is created and the clients are skipped.
 - Links to devices or clients left out of the sync, such as an upstream device outside UniFi.
 - Interfaces that already have a Cable the sync did not create. A matching Cable made by hand is left as is; any other is logged as a warning.
+
+#### IP addresses
+
+With `import_ip_addresses` on (the default), the sync creates a Prefix for the subnet of each UniFi network, and an IP Address for the address UniFi reports for each synced device and client, in the Namespace set by `namespace` (`Global` by default). The mask comes from the UniFi network containing the address, else from the narrowest Prefix in Nautobot containing it. Addresses with neither, such as a gateway's public WAN address, are skipped. Clients with a fixed IP in UniFi, and devices with a static management address, get type Host; others DHCP.
+
+Each IP Address is assigned to an Interface of its Device:
+
+- The Interface it is already assigned to, if it was set up on that Device by hand, e.g. on `eth0` instead of `mgmt`.
+- Otherwise the Interface holding the Device's MAC address, else a new `mgmt` (UniFi devices) or `eth0` (clients) Interface.
+
+When a client's address changes, its assignment and the old IP Address go, so DHCP addresses follow UniFi. Prefixes and IP Addresses already in Nautobot are used as they are: the sync assigns them to Interfaces but never changes or deletes them, and addresses set up by hand that UniFi does not report are never unassigned. Prefixes are never deleted, and keep the Status set in Nautobot, as do IP Addresses. Primary IPs are not set.
+
+#### VLANs and switch ports
+
+With `import_vlans` on (the default), each site's networks become VLANs in a VLAN Group named after the site, in the site's Location, whose Location Type gets the VLAN Group content type; the network without a VLAN, UniFi's default network, is VLAN 1. WAN and VPN networks are skipped. VLANs are never deleted, and keep the Status set in Nautobot.
+
+Each port of a UniFi switch, or of a gateway with switch ports, gets the 802.1Q settings of its port profile, or its own settings when it has no profile:
+
+| UniFi tagged VLAN management | 802.1Q mode | Tagged VLANs |
+| ---------------------------- | ----------- | ------------ |
+| Block all | Access | None |
+| Allow all | Tagged (All) | None |
+| Custom | Tagged | Every VLAN except the excluded ones and the native one |
+
+The port's native network is the untagged VLAN. A disabled port gets no mode. Ports in a link aggregation group, other than the group's first port, are skipped. Ports are matched to Interfaces as for Cables, and a missing one is created with a type from the port's media, e.g. `2.5gbase-t` or `10gbase-x-sfpp`. Existing Interfaces keep their type.
+
+VLANs already in Nautobot are used as they are, never changed: a VLAN ID that has a VLAN usable in the site's Location, global or in that Location or a parent, is not created in the site's group, and ports use the existing VLAN. A VLAN Group named like the site that the sync did not create gets the site's VLANs without being changed.
 
 #### Controller and wireless networks
 
@@ -87,5 +114,5 @@ A MAC address found on more than one Device is skipped in every mode. A Location
 
 #### Jobs
 
-- **UniFi to Nautobot** syncs UniFi sites, devices, clients, cables, firmware versions, the controller, and WLANs into Nautobot.
+- **UniFi to Nautobot** syncs UniFi sites, devices, clients, cables, IP addresses, network subnets, VLANs, switch port settings, firmware versions, the controller, and WLANs into Nautobot.
 - **Nautobot to UniFi** is a placeholder. Do not run it: it writes to Nautobot, not UniFi.

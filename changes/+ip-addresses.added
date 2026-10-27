@@ -1,0 +1,1 @@
+Added syncing of UniFi network subnets as Prefixes and of device and client IP addresses, assigned to their Interfaces, with the new `import_ip_addresses` and `namespace` settings.

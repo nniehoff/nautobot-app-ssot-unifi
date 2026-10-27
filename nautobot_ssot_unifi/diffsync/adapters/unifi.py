@@ -4,6 +4,7 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from typing import Optional
 
+import netaddr
 from diffsync import Adapter
 from diffsync.exceptions import ObjectNotFound
 from pyunifi.controller import Controller
@@ -11,7 +12,10 @@ from pyunifi.controller import Controller
 from nautobot_ssot_unifi.constants import (
     CLIENT_INTERFACE_NAME,
     CLIENT_ROLE,
+    DEVICE_INTERFACE_NAME,
     DEVICETYPE_MAP,
+    INTERFACE_TYPE_MAP,
+    SWITCHING_DEVICE_TYPES,
     SYSTEM_OF_RECORD,
     WIRELESS_CAPABILITY,
     WIRELESS_NETWORK_MODE,
@@ -23,20 +27,37 @@ from nautobot_ssot_unifi.diffsync.models.unifi import (
     UniFiControllerModel,
     UniFiDeviceModel,
     UniFiDeviceTypeModel,
+    UniFiInterfaceModel,
+    UniFiIPAddressAssignmentModel,
+    UniFiIPAddressModel,
     UniFiLocationModel,
     UniFiLocationTypeModel,
     UniFiManufacturerModel,
     UniFiPlatformModel,
+    UniFiPrefixModel,
     UniFiRoleModel,
     UniFiSoftwareVersionModel,
+    UniFiVLANGroupModel,
+    UniFiVLANModel,
     UniFiWirelessNetworkAssignmentModel,
     UniFiWirelessNetworkModel,
 )
-from nautobot_ssot_unifi.utils.nautobot import resolve_interface_name, resolve_mac_interface_name
+from nautobot_ssot_unifi.utils.nautobot import (
+    find_prefix_length,
+    resolve_interface_name,
+    resolve_ip_interface_name,
+    resolve_mac_interface_name,
+)
 from nautobot_ssot_unifi.utils.unifi import (
     PLUGIN_CFG,
     get_controller_name,
+    get_default_port_names,
+    get_namespace,
+    get_network_vlans,
+    get_networks,
     get_platform,
+    get_port_profiles,
+    get_port_switching,
     get_sites,
     get_wlan_authentication,
     is_random_mac,
@@ -54,17 +75,28 @@ def import_cables() -> bool:
     return PLUGIN_CFG.get("import_cables", True)
 
 
-def port_interface_names(port_names: dict, port: int) -> list:
+def import_ip_addresses() -> bool:
+    """Whether to sync the IP addresses of devices and clients, and their networks' Prefixes (default True)."""
+    return PLUGIN_CFG.get("import_ip_addresses", True)
+
+
+def import_vlans() -> bool:
+    """Whether to sync UniFi networks as VLANs and switch ports' 802.1Q settings (`import_vlans`, default True)."""
+    return PLUGIN_CFG.get("import_vlans", True)
+
+
+def port_interface_names(port_names: dict, port: int, default: Optional[str] = None) -> list:
     """Interface names a UniFi switch port may have in Nautobot, in order of preference.
 
     Args:
         port_names (dict): Port number to name in UniFi, e.g. {1: "Port 1", 8: "Uplink", 9: "SFP 1"}.
         port (int): Port number.
+        default (str, optional): Name UniFi gives the port until it is renamed, e.g. "SFP+ 1".
 
     Returns:
-        list: The port's name in UniFi, then "Port <n>", then "<n>".
+        list: The port's name in UniFi, its default name, then "Port <n>", then "<n>".
     """
-    return list(dict.fromkeys(name for name in (port_names.get(port), f"Port {port}", str(port)) if name))
+    return list(dict.fromkeys(name for name in (port_names.get(port), default, f"Port {port}", str(port)) if name))
 
 
 def sorted_content_types(content_types) -> list:
@@ -88,7 +120,13 @@ class UniFiAdapter(Adapter):
     devicegroup = UniFiControllerManagedDeviceGroupModel
     wirelessnetwork = UniFiWirelessNetworkModel
     wirelessnetworkassignment = UniFiWirelessNetworkAssignmentModel
+    vlangroup = UniFiVLANGroupModel
+    vlan = UniFiVLANModel
     device = UniFiDeviceModel
+    interface = UniFiInterfaceModel
+    prefix = UniFiPrefixModel
+    ipaddress = UniFiIPAddressModel
+    ipassignment = UniFiIPAddressAssignmentModel
     cable = UniFiCableModel
 
     top_level = TOP_LEVEL
@@ -115,17 +153,26 @@ class UniFiAdapter(Adapter):
         # Location Types of existing Locations the sync uses as is, kept by `prune_unused()` although no
         # synced Location refers to them, so the content types UniFi objects need are added to them.
         self.required_location_types = set()
-        # Port number to name of each UniFi device with switch ports, by lowercase MAC.
+        # Port number to name of each UniFi device with switch ports, by lowercase MAC, and to the name UniFi
+        # gives the port until it is renamed.
         self.port_names = {}
+        self.default_port_names = {}
+        # Network ID to VLAN ID, and port profiles by ID, of the site being read.
+        self.network_vlans = {}
+        self.port_profiles = {}
         # Wired links read from UniFi, loaded as Cables by `load_cables()` once all Devices are loaded.
         self.links = []
+        # Subnets of the UniFi networks read so far, to find the mask of each IP address.
+        self.subnets = []
 
     @staticmethod
     def location_content_types() -> list:
-        """Content types Locations of UniFi sites must allow: Devices, and the Controller when it is synced."""
+        """Content types Locations of UniFi sites must allow: Devices, and the Controller and VLAN Groups when synced."""
         content_types = [{"app_label": "dcim", "model": "device"}]
         if import_wireless():
             content_types.append({"app_label": "dcim", "model": "controller"})
+        if import_vlans():
+            content_types.append({"app_label": "ipam", "model": "vlangroup"})
         return content_types
 
     def load_location_type(self, name: str, required: bool = False):
@@ -235,6 +282,165 @@ class UniFiAdapter(Adapter):
         """Load Device models from UniFi as DeviceType."""
         self.get_or_instantiate(self.devicetype, {"model": model, "manufacturer__name": manu_name})
 
+    def load_networks(self, site: dict, networks: list):
+        """Load the subnet of each of a site's networks as a Prefix, and keep it to find IP address masks.
+
+        Args:
+            site (dict): Site the client is pointed at.
+            networks (list): The site's networks, from `get_networks()`.
+        """
+        networks = [network for network in networks if network.get("ip_subnet")]
+        self.job.logger.info("Found %s networks with a subnet in UniFi site %s", len(networks), site["desc"])
+        for network in networks:
+            try:
+                subnet = netaddr.IPNetwork(network["ip_subnet"]).cidr
+            except (netaddr.AddrFormatError, ValueError):
+                self.job.logger.warning(
+                    "Skipping UniFi network %s: invalid subnet %r.", network.get("name"), network["ip_subnet"]
+                )
+                continue
+            self.subnets.append(subnet)
+            self.get_or_instantiate(
+                self.prefix,
+                ids={
+                    "network": str(subnet.network),
+                    "prefix_length": subnet.prefixlen,
+                    "namespace__name": get_namespace(),
+                },
+                attrs={"status__name": "Active"},
+            )
+
+    def load_vlans(self, site: dict, networks: list):
+        """Load a site's networks as VLANs in a VLAN Group for the site, and read its port profiles.
+
+        Args:
+            site (dict): Site the client is pointed at.
+            networks (list): The site's networks, from `get_networks()`.
+        """
+        self.network_vlans = get_network_vlans(networks)
+        self.port_profiles = get_port_profiles(self.conn)
+        self.job.logger.info(
+            "Found %s VLANs and %s port profiles in UniFi site %s",
+            len(set(self.network_vlans.values())),
+            len(self.port_profiles),
+            site["desc"],
+        )
+        self.get_or_instantiate(
+            self.vlangroup,
+            ids={"unifi_site": site["name"], "unifi_controller": self.controller_name},
+            attrs={"name": site["desc"], "location__name": site["desc"]},
+        )
+        names = {network.get("_id") or network.get("id"): network.get("name") for network in networks}
+        for network_id, vid in sorted(self.network_vlans.items(), key=lambda item: item[1]):
+            self.get_or_instantiate(
+                self.vlan,
+                ids={"vid": vid, "vlan_group__name": site["desc"]},
+                attrs={"name": names.get(network_id) or f"VLAN {vid}", "status__name": "Active"},
+            )
+
+    def read_device_ports(self, device: dict):
+        """Load the 802.1Q settings of a UniFi switch's ports as Interfaces.
+
+        Ports aggregated into another port's link aggregation group are skipped; the group's first port carries the
+        settings.
+
+        Args:
+            device (dict): Device from the UniFi `stat/device` endpoint.
+        """
+        if not import_vlans() or device.get("type") not in SWITCHING_DEVICE_TYPES:
+            return
+        mac = device["mac"].lower()
+        for port in device.get("port_table") or []:
+            if "port_idx" not in port or port.get("aggregated_by"):
+                continue
+            switching = get_port_switching(port, self.port_profiles, self.network_vlans)
+            idx = port["port_idx"]
+            if switching is None:
+                self.job.logger.warning(
+                    "Skipping 802.1Q settings of UniFi %s port %s: unknown VLAN settings.", device.get("name"), idx
+                )
+                continue
+            mode, untagged_vid, tagged_vids = switching
+            default = self.default_port_names.get(mac, {}).get(idx, f"Port {idx}")
+            self.get_or_instantiate(
+                self.interface,
+                ids={
+                    "mac_address": mac,
+                    "name": resolve_interface_name(
+                        mac, port_interface_names(self.port_names.get(mac, {}), idx, default), default
+                    ),
+                },
+                attrs={
+                    "type": INTERFACE_TYPE_MAP.get(port.get("media"), "other"),
+                    "mode": mode,
+                    "untagged_vid": untagged_vid,
+                    "tagged_vids": tagged_vids,
+                },
+            )
+
+    def get_mask_length(self, host: str) -> Optional[int]:
+        """Mask length of an IP address: its narrowest UniFi network, else the narrowest Prefix in Nautobot.
+
+        Args:
+            host (str): IP address without mask.
+
+        Returns:
+            Optional[int]: Mask length, or None if neither UniFi nor Nautobot has a subnet containing the address.
+        """
+        address = netaddr.IPAddress(host)
+        lengths = [subnet.prefixlen for subnet in self.subnets if address in subnet]
+        return max(lengths) if lengths else find_prefix_length(host)
+
+    def load_ip_addresses(self, records: list):
+        """Load the IP address of each loaded device and client, and its assignment to the right Interface.
+
+        Addresses outside every UniFi network and Nautobot Prefix, such as a gateway's public WAN address, are
+        skipped, since Nautobot needs a parent Prefix for each IP Address.
+
+        Args:
+            records (list): Records from `get_unifi_devices()` and `get_clients()`.
+        """
+        if not import_ip_addresses():
+            return
+        loaded = {device.mac_address for device in self.get_all(self.device)}
+        for record in records:
+            mac, host = record["mac"].lower(), record.get("ip")
+            if not host or mac not in loaded:
+                continue
+            try:
+                mask_length = self.get_mask_length(host)
+            except (netaddr.AddrFormatError, ValueError):
+                self.job.logger.warning("Skipping invalid IP address %r of UniFi %s.", host, record["name"])
+                continue
+            if mask_length is None:
+                if self.job.debug:
+                    self.job.logger.debug(
+                        "Skipping IP address %s of UniFi %s: no UniFi network or Nautobot Prefix in Namespace %s "
+                        "contains it.",
+                        host,
+                        record["name"],
+                        get_namespace(),
+                    )
+                continue
+            self.get_or_instantiate(
+                self.ipaddress,
+                ids={"host": host, "parent__namespace__name": get_namespace()},
+                attrs={
+                    "mask_length": mask_length,
+                    "status__name": "Active",
+                    "type": record["ip_type"],
+                    "system_of_record": SYSTEM_OF_RECORD,
+                    "ssot_last_synchronized": datetime.today().date().isoformat(),
+                    "unifi_controller": self.controller_name,
+                },
+            )
+            default = CLIENT_INTERFACE_NAME if record["role"] == CLIENT_ROLE else DEVICE_INTERFACE_NAME
+            self.get_or_instantiate(
+                self.ipassignment,
+                ids={"mac_address": mac, "host": host},
+                attrs={"interface": resolve_ip_interface_name(mac, host, default)},
+            )
+
     def get_unifi_devices(self, site: dict) -> list:
         """Read the UniFi network devices adopted in a site.
 
@@ -250,6 +456,7 @@ class UniFiAdapter(Adapter):
         records = []
         for ap in aps:
             self.read_device_link(ap)
+            self.read_device_ports(ap)
             model = DEVICETYPE_MAP[ap["model"]] if DEVICETYPE_MAP.get(ap["model"]) else ap["model"]
             records.append(
                 {
@@ -263,6 +470,8 @@ class UniFiAdapter(Adapter):
                     "platform": get_platform(ap),
                     "version": ap.get("version") or None,
                     "group": site["desc"] if import_wireless() else None,
+                    "ip": ap.get("ip"),
+                    "ip_type": "dhcp" if (ap.get("config_network") or {}).get("type") == "dhcp" else "host",
                 }
             )
         return records
@@ -279,12 +488,15 @@ class UniFiAdapter(Adapter):
         }
         if port_names:
             self.port_names[mac] = port_names
+            self.default_port_names[mac] = get_default_port_names(
+                [port for port in device.get("port_table") or [] if "port_idx" in port]
+            )
         uplink = device.get("uplink") or {}
         if uplink.get("type") != "wire" or not uplink.get("uplink_mac") or not uplink.get("uplink_remote_port"):
             return
         if port_names and uplink.get("port_idx"):
-            interfaces = port_interface_names(port_names, uplink["port_idx"])
-            default = f"Port {uplink['port_idx']}"
+            default = self.default_port_names[mac].get(uplink["port_idx"], f"Port {uplink['port_idx']}")
+            interfaces = port_interface_names(port_names, uplink["port_idx"], default)
         else:
             # Access points: no switch ports, just the Ethernet interface UniFi names, e.g. "eth0".
             interfaces = [uplink.get("name") or CLIENT_INTERFACE_NAME]
@@ -331,14 +543,15 @@ class UniFiAdapter(Adapter):
                 interface = resolve_mac_interface_name(link["mac"], CLIENT_INTERFACE_NAME)
             else:
                 interface = resolve_interface_name(link["mac"], link["interface"], link["default"])
-            port_names = port_interface_names(self.port_names.get(upstream_mac, {}), port)
+            default = self.default_port_names.get(upstream_mac, {}).get(port, f"Port {port}")
+            port_names = port_interface_names(self.port_names.get(upstream_mac, {}), port, default)
             self.get_or_instantiate(
                 self.cable,
                 ids={"mac_address": link["mac"]},
                 attrs={
                     "interface": interface,
                     "upstream_mac_address": upstream_mac,
-                    "upstream_interface": resolve_interface_name(upstream_mac, port_names, f"Port {port}"),
+                    "upstream_interface": resolve_interface_name(upstream_mac, port_names, default),
                 },
             )
 
@@ -418,6 +631,8 @@ class UniFiAdapter(Adapter):
                     "platform": None,
                     "version": None,
                     "group": None,
+                    "ip": client.get("ip"),
+                    "ip_type": "host" if client.get("use_fixedip") else "dhcp",
                 }
             )
         self.job.logger.info("Found %s clients in UniFi site %s, loading %s", len(clients), site["desc"], len(records))
@@ -488,9 +703,15 @@ class UniFiAdapter(Adapter):
             if import_wireless():
                 self.load_device_group(site)
                 self.load_wlans(site)
+            networks = get_networks(self.conn) if import_ip_addresses() or import_vlans() else []
+            if import_ip_addresses():
+                self.load_networks(site, networks)
+            if import_vlans():
+                self.load_vlans(site, networks)
             records.extend(self.get_unifi_devices(site))
             records.extend(self.get_clients(site))
         self.load_devices(records)
+        self.load_ip_addresses(records)
         self.load_cables()
 
     def keep_nautobot_fields(self, target: Adapter):
@@ -498,7 +719,8 @@ class UniFiAdapter(Adapter):
 
         Devices already in `target` keep Role, Device Type, and Status, serial and Platform unless Nautobot
         has none, and for clients also Platform, Software Version, and device group. Locations keep Location
-        Type and Status; the Controller keeps Location and Status. Content types of Location Types and Roles,
+        Type and Status; the Controller keeps Location and Status; Prefixes, IP Addresses, and VLANs keep Status;
+        Interfaces keep their type, and VLAN Groups their Location. Content types of Location Types and Roles,
         and Controller capabilities, become the union of both, so the sync only ever adds to them.
 
         Args:
@@ -524,6 +746,19 @@ class UniFiAdapter(Adapter):
             if existing is not None:
                 location.location_type__name = existing.location_type__name
                 location.status__name = existing.status__name
+        for model in (self.prefix, self.ipaddress, self.vlan):
+            for obj in self.get_all(model):
+                existing = self._get_existing(target, obj)
+                if existing is not None:
+                    obj.status__name = existing.status__name
+        for interface in self.get_all(self.interface):
+            existing = self._get_existing(target, interface)
+            if existing is not None:
+                interface.type = existing.type
+        for group in self.get_all(self.vlangroup):
+            existing = self._get_existing(target, group)
+            if existing is not None:
+                group.location__name = existing.location__name
         for controller in self.get_all(self.controller):
             existing = self._get_existing(target, controller)
             if existing is not None:
@@ -554,9 +789,10 @@ class UniFiAdapter(Adapter):
             return None
 
     def prune_unused(self):
-        """Drop Cables and shared objects that no remaining Device or Location needs.
+        """Drop Cables, IP Addresses, and shared objects that no remaining Device or Location needs.
 
-        Cables to Devices left out of the sync go, as do unreferenced Roles, Device Types, Manufacturers,
+        Cables, Interfaces, and IP Address assignments of Devices left out of the sync go, then IP Addresses assigned nowhere,
+        as do unreferenced Roles, Device Types, Manufacturers,
         Platforms, Software Versions, and Location Types.
 
         Devices left out of the sync, and the Nautobot values kept by `keep_nautobot_fields()`, leave
@@ -576,6 +812,16 @@ class UniFiAdapter(Adapter):
         for cable in list(self.get_all(self.cable)):
             if cable.mac_address not in macs or cable.upstream_mac_address not in macs:
                 self.remove(cable)
+        for interface in list(self.get_all(self.interface)):
+            if interface.mac_address not in macs:
+                self.remove(interface)
+        for assignment in list(self.get_all(self.ipassignment)):
+            if assignment.mac_address not in macs:
+                self.remove(assignment)
+        hosts = {assignment.host for assignment in self.get_all(self.ipassignment)}
+        for ip_address in list(self.get_all(self.ipaddress)):
+            if ip_address.host not in hosts:
+                self.remove(ip_address)
         location_types = {location.location_type__name for location in self.get_all(self.location)}
         location_types |= self.required_location_types
         for model, keep in (

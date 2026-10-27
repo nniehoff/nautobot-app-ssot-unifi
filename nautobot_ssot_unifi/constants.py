@@ -15,6 +15,36 @@ CLIENT_ROLE = "Client"
 # Status of the Cables the sync creates.
 CABLE_STATUS = "Connected"
 
+# Namespace of the Prefixes and IP Addresses the sync creates and matches,
+# unless the `namespace` setting names another.
+DEFAULT_NAMESPACE = "Global"
+
+# Kinds of UniFi devices whose ports are switch ports with VLAN settings.
+SWITCHING_DEVICE_TYPES = ("udm", "usw")
+
+# VLAN ID of a UniFi network without one: the default network, untagged on VLAN 1.
+DEFAULT_VLAN_ID = 1
+
+# UniFi network purposes that are Layer 2 networks, which can be on switch ports.
+VLAN_NETWORK_PURPOSES = ("corporate", "guest", "vlan-only")
+
+# UniFi names fiber ports by cage type and count, e.g. "SFP+ 2"; other ports "Port <n>".
+PORT_MEDIA_PREFIXES = ("SFP", "SFP+", "SFP28", "QSFP28")
+
+# Nautobot Interface type of a UniFi switch port, by the port's `media`. Only
+# used when the sync creates the Interface.
+INTERFACE_TYPE_MAP = {
+    "FE": "100base-tx",
+    "GE": "1000base-t",
+    "2P5GE": "2.5gbase-t",
+    "5GE": "5gbase-t",
+    "10GE": "10gbase-t",
+    "SFP": "1000base-x-sfp",
+    "SFP+": "10gbase-x-sfpp",
+    "SFP28": "25gbase-x-sfp28",
+    "QSFP28": "100gbase-x-qsfp28",
+}
+
 # Platform of each kind of UniFi device, by the `type` UniFi reports. UniFi
 # releases firmware per kind, so each gets its own Software Versions.
 PLATFORM_MAP = {

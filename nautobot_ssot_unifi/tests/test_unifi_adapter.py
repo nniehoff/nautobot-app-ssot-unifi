@@ -8,7 +8,14 @@ from nautobot.extras.models import JobResult
 
 from nautobot_ssot_unifi.diffsync.adapters.unifi import UniFiAdapter
 from nautobot_ssot_unifi.jobs import UniFiDataSource
-from nautobot_ssot_unifi.utils.unifi import PLUGIN_CFG, get_controller_name, get_wlan_authentication
+from nautobot_ssot_unifi.utils.unifi import (
+    PLUGIN_CFG,
+    get_controller_name,
+    get_default_port_names,
+    get_network_vlans,
+    get_port_switching,
+    get_wlan_authentication,
+)
 
 
 def load_json(path):
@@ -20,9 +27,11 @@ def load_json(path):
 SITE_FIXTURE = load_json("./nautobot_ssot_unifi/tests/fixtures/get_sites.json")
 AP_FIXTURE = load_json("./nautobot_ssot_unifi/tests/fixtures/get_aps.json")
 WLAN_FIXTURE = load_json("./nautobot_ssot_unifi/tests/fixtures/get_wlanconf.json")
+NETWORK_FIXTURE = load_json("./nautobot_ssot_unifi/tests/fixtures/get_networkconf.json")
+PORTCONF_FIXTURE = load_json("./nautobot_ssot_unifi/tests/fixtures/get_portconf.json")
 
 
-class TestUniFiAdapterTestCase(TransactionTestCase):
+class TestUniFiAdapterTestCase(TransactionTestCase):  # pylint: disable=too-many-public-methods
     """Test NautobotSsotUniFiAdapter class."""
 
     job_class = UniFiDataSource
@@ -34,6 +43,9 @@ class TestUniFiAdapterTestCase(TransactionTestCase):
         self.unifi_client.get_aps.return_value = AP_FIXTURE
         self.unifi_client.get_clients.return_value = []
         self.unifi_client.get_wlan_conf.return_value = WLAN_FIXTURE
+        self.unifi_client._api_read.side_effect = (  # pylint: disable=protected-access
+            lambda url: PORTCONF_FIXTURE if url == "rest/portconf" else NETWORK_FIXTURE
+        )
 
         self.job = self.job_class()
         self.job.job_result = JobResult.objects.create(
@@ -232,7 +244,11 @@ class TestUniFiAdapterTestCase(TransactionTestCase):
             {version.get_unique_id() for version in self.unifi.get_all("softwareversion")},
         )
         self.assertEqual(
-            [{"app_label": "dcim", "model": "device"}, {"app_label": "dcim", "model": "controller"}],
+            [
+                {"app_label": "dcim", "model": "device"},
+                {"app_label": "dcim", "model": "controller"},
+                {"app_label": "ipam", "model": "vlangroup"},
+            ],
             self.unifi.get("locationtype", "Site").content_types,
         )
 
@@ -286,7 +302,7 @@ class TestUniFiAdapterTestCase(TransactionTestCase):
         self.assertEqual(("vyos", "UniFi Gateway"), (device.platform__name, device.software_version__platform__name))
         self.assertEqual({"UniFi Gateway"}, {platform.name for platform in self.unifi.get_all("platform")})
         self.assertEqual(
-            {("dcim", "controller"), ("dcim", "device"), ("dcim", "rack")},
+            {("dcim", "controller"), ("dcim", "device"), ("dcim", "rack"), ("ipam", "vlangroup")},
             {(ct["app_label"], ct["model"]) for ct in self.unifi.get("locationtype", "Site").content_types},
         )
 
@@ -376,3 +392,120 @@ class TestUniFiAdapterTestCase(TransactionTestCase):
         self.unifi.links = [{"mac": "a", "interface": None, "upstream_mac": "b", "upstream_port": 1}]
         self.unifi.load_cables()
         self.assertEqual([], self.unifi.get_all("cable"))
+
+    def test_load_ip_addresses(self):
+        """Networks become Prefixes; IP addresses get their network's mask and go on the MAC's Interface."""
+        site = SITE_FIXTURE[0]
+        self.unifi.load_networks(site, NETWORK_FIXTURE)
+        self.assertEqual(
+            {"192.168.1.0__24__Global", "10.0.20.0__24__Global"},
+            {prefix.get_unique_id() for prefix in self.unifi.get_all("prefix")},
+        )
+        self.unifi_client.get_clients.return_value = [
+            {
+                "mac": "00:11:22:33:44:01",
+                "is_wired": True,
+                "hostname": "printer",
+                "ip": "10.0.20.5",
+                "use_fixedip": True,
+            },
+            {"mac": "00:11:22:33:44:02", "is_wired": True, "hostname": "laptop", "ip": "192.168.1.50"},
+            {"mac": "00:11:22:33:44:03", "is_wired": True, "hostname": "elsewhere", "ip": "172.16.0.5"},
+            {"mac": "00:11:22:33:44:04", "is_wired": True, "hostname": "offline"},
+        ]
+        # The gateway in the device fixture only has its public WAN address, outside every network.
+        records = self.unifi.get_unifi_devices(site) + self.unifi.get_clients(site)
+        self.unifi.load_devices(records)
+        self.unifi.load_ip_addresses(records)
+        self.assertEqual(
+            {("10.0.20.5", 24, "host"), ("192.168.1.50", 24, "dhcp")},
+            {(ip.host, ip.mask_length, ip.type) for ip in self.unifi.get_all("ipaddress")},
+        )
+        self.assertEqual(
+            {("00:11:22:33:44:01", "10.0.20.5", "eth0"), ("00:11:22:33:44:02", "192.168.1.50", "eth0")},
+            {(ip.mac_address, ip.host, ip.interface) for ip in self.unifi.get_all("ipassignment")},
+        )
+        # A device left out of the sync takes its IP address with it.
+        self.unifi.remove(self.unifi.get("device", "00:11:22:33:44:01"))
+        self.unifi.prune_unused()
+        self.assertEqual(["192.168.1.50"], [ip.host for ip in self.unifi.get_all("ipaddress")])
+
+    @patch.dict(PLUGIN_CFG, {"import_ip_addresses": False})
+    @patch("nautobot_ssot_unifi.diffsync.adapters.unifi.get_sites")
+    def test_load_without_ip_addresses(self, mock_get_sites):
+        """No Prefixes or IP Addresses are loaded when `import_ip_addresses` is off."""
+        mock_get_sites.return_value = SITE_FIXTURE
+        self.unifi_client.get_clients.return_value = [
+            {"mac": "00:11:22:33:44:02", "is_wired": True, "hostname": "laptop", "ip": "192.168.1.50"}
+        ]
+        self.unifi.load()
+        self.assertEqual([], self.unifi.get_all("prefix") + self.unifi.get_all("ipaddress"))
+
+    def test_get_port_switching(self):
+        """Port profiles and port settings map to 802.1Q modes; tagged VLANs are all but excluded and native ones."""
+        vlans = get_network_vlans(NETWORK_FIXTURE)
+        self.assertEqual({"5f1b2c3d4e5f6a7b8c9d0e01": 1, "5f1b2c3d4e5f6a7b8c9d0e02": 20}, vlans)
+        profiles = {profile["_id"]: profile for profile in PORTCONF_FIXTURE}
+        trunk = {"portconf_id": "6634156902f42658f5e9aa01", "forward": "all"}
+        self.assertEqual(("tagged", None, [20]), get_port_switching(trunk, profiles, vlans))
+        self.assertEqual(
+            ("access", 20, []), get_port_switching({"portconf_id": "6634156902f42658f5e9aa02"}, profiles, vlans)
+        )
+        own = {"tagged_vlan_mgmt": "auto", "native_networkconf_id": "5f1b2c3d4e5f6a7b8c9d0e01"}
+        self.assertEqual(("tagged-all", 1, []), get_port_switching(own, profiles, vlans))
+        legacy = {"forward": "customize", "tagged_networkconf_ids": ["5f1b2c3d4e5f6a7b8c9d0e02"]}
+        self.assertEqual(("tagged", None, [20]), get_port_switching(legacy, profiles, vlans))
+        self.assertEqual((None, None, []), get_port_switching({"forward": "disabled"}, profiles, vlans))
+        self.assertIsNone(get_port_switching({"tagged_vlan_mgmt": "unknown"}, profiles, vlans))
+
+    def test_get_default_port_names(self):
+        """Fiber ports are named by cage type and count, as UniFi does; others "Port <n>"."""
+        ports = [{"port_idx": 2, "media": "SFP+"}, {"port_idx": 1, "media": "GE"}, {"port_idx": 3, "media": "SFP+"}]
+        self.assertEqual({1: "Port 1", 2: "SFP+ 1", 3: "SFP+ 2"}, get_default_port_names(ports))
+
+    @patch("nautobot_ssot_unifi.diffsync.adapters.unifi.get_sites")
+    def test_load_vlans_and_ports(self, mock_get_sites):
+        """Networks become VLANs in the site's VLAN Group; switch ports get 802.1Q settings, LAG members do not."""
+        mock_get_sites.return_value = SITE_FIXTURE
+        switch = {
+            "mac": "F4:E2:C6:BF:5C:FD",
+            "name": "officesw1",
+            "model": "US68P",
+            "type": "usw",
+            "serial": "",
+            "port_table": [
+                {"port_idx": 1, "media": "GE", "name": "Uplink", "portconf_id": "6634156902f42658f5e9aa01"},
+                {
+                    "port_idx": 2,
+                    "media": "2P5GE",
+                    "name": "Port 2",
+                    "tagged_vlan_mgmt": "block_all",
+                    "native_networkconf_id": "5f1b2c3d4e5f6a7b8c9d0e02",
+                },
+                {"port_idx": 3, "media": "SFP+", "name": "SFP+ 1", "portconf_id": "6634156902f42658f5e9aa01"},
+                {"port_idx": 4, "media": "SFP+", "name": "SFP+ 2", "aggregated_by": 3},
+            ],
+        }
+        self.unifi_client.get_aps.return_value = [switch]
+        self.unifi.load()
+        self.assertEqual(["Test"], [group.name for group in self.unifi.get_all("vlangroup")])
+        self.assertEqual({(1, "Default"), (20, "IoT")}, {(vlan.vid, vlan.name) for vlan in self.unifi.get_all("vlan")})
+        self.assertEqual(
+            {
+                ("Port 1", "1000base-t", "tagged", None, (20,)),
+                ("Port 2", "2.5gbase-t", "access", 20, ()),
+                ("SFP+ 1", "10gbase-x-sfpp", "tagged", None, (20,)),
+            },
+            {
+                (port.name, port.type, port.mode, port.untagged_vid, tuple(port.tagged_vids))
+                for port in self.unifi.get_all("interface")
+            },
+        )
+
+    @patch.dict(PLUGIN_CFG, {"import_vlans": False})
+    @patch("nautobot_ssot_unifi.diffsync.adapters.unifi.get_sites")
+    def test_load_without_vlans(self, mock_get_sites):
+        """No VLANs or switch port settings are loaded when `import_vlans` is off."""
+        mock_get_sites.return_value = SITE_FIXTURE
+        self.unifi.load()
+        self.assertEqual([], self.unifi.get_all("vlan") + self.unifi.get_all("interface"))

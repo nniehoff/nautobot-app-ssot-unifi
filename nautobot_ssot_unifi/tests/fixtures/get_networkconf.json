@@ -1,0 +1,25 @@
+[
+    {
+        "_id": "5f1b2c3d4e5f6a7b8c9d0e01",
+        "enabled": true,
+        "ip_subnet": "192.168.1.1/24",
+        "name": "Default",
+        "purpose": "corporate",
+        "vlan_enabled": false
+    },
+    {
+        "_id": "5f1b2c3d4e5f6a7b8c9d0e02",
+        "enabled": true,
+        "ip_subnet": "10.0.20.1/24",
+        "name": "IoT",
+        "purpose": "corporate",
+        "vlan": 20,
+        "vlan_enabled": true
+    },
+    {
+        "_id": "5f1b2c3d4e5f6a7b8c9d0e03",
+        "enabled": true,
+        "name": "Internet 1",
+        "purpose": "wan"
+    }
+]

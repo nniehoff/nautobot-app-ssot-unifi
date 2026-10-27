@@ -7,8 +7,8 @@ def nautobot_database_ready_callback(sender, *, apps, **kwargs):  # pylint: disa
     """Add the CustomFields this app syncs.
 
     System of Record and Last Sync'd go on Cable, Device, Interface, IPAddress, and WirelessNetwork; UniFi
-    Controller on Cable, Device, Location, ControllerManagedDeviceGroup, and WirelessNetwork; UniFi Site on Location and
-    ControllerManagedDeviceGroup.
+    Controller on Cable, Device, IPAddress, Location, ControllerManagedDeviceGroup, VLANGroup, and WirelessNetwork;
+    UniFi Site on Location, ControllerManagedDeviceGroup, and VLANGroup.
 
     Callback function triggered by the nautobot_database_ready signal when the Nautobot database is fully ready.
     """
@@ -21,6 +21,7 @@ def nautobot_database_ready_callback(sender, *, apps, **kwargs):  # pylint: disa
     Location = apps.get_model("dcim", "Location")
     Interface = apps.get_model("dcim", "Interface")
     IPAddress = apps.get_model("ipam", "IPAddress")
+    VLANGroup = apps.get_model("ipam", "VLANGroup")
     WirelessNetwork = apps.get_model("wireless", "WirelessNetwork")
 
     sor_cf_dict = {
@@ -46,7 +47,7 @@ def nautobot_database_ready_callback(sender, *, apps, **kwargs):  # pylint: disa
     controller_custom_field, _ = CustomField.objects.update_or_create(
         key=controller_cf_dict["key"], defaults=controller_cf_dict
     )
-    for model in [Cable, Device, Location, ControllerManagedDeviceGroup, WirelessNetwork]:
+    for model in [Cable, Device, IPAddress, Location, ControllerManagedDeviceGroup, VLANGroup, WirelessNetwork]:
         controller_custom_field.content_types.add(ContentType.objects.get_for_model(model))
     site_cf_dict = {
         "type": CustomFieldTypeChoices.TYPE_TEXT,
@@ -54,5 +55,5 @@ def nautobot_database_ready_callback(sender, *, apps, **kwargs):  # pylint: disa
         "label": "UniFi Site",
     }
     site_custom_field, _ = CustomField.objects.update_or_create(key=site_cf_dict["key"], defaults=site_cf_dict)
-    for model in [Location, ControllerManagedDeviceGroup]:
+    for model in [Location, ControllerManagedDeviceGroup, VLANGroup]:
         site_custom_field.content_types.add(ContentType.objects.get_for_model(model))

@@ -58,10 +58,13 @@ PLUGINS_CONFIG = {
         "exclude_client_uplinks": [uplink for uplink in os.getenv("UNIFI_EXCLUDE_CLIENT_UPLINKS", "").split(",") if uplink],
         "import_cables": is_truthy(os.getenv("UNIFI_IMPORT_CABLES", "true")),
         "import_clients": is_truthy(os.getenv("UNIFI_IMPORT_CLIENTS", "true")),
+        "import_ip_addresses": is_truthy(os.getenv("UNIFI_IMPORT_IP_ADDRESSES", "true")),
+        "import_vlans": is_truthy(os.getenv("UNIFI_IMPORT_VLANS", "true")),
         "import_wireless": is_truthy(os.getenv("UNIFI_IMPORT_WIRELESS", "true")),
         "import_wireless_clients": is_truthy(os.getenv("UNIFI_IMPORT_WIRELESS_CLIENTS", "true")),
         "include_client_networks": [network for network in os.getenv("UNIFI_INCLUDE_CLIENT_NETWORKS", "").split(",") if network],
         "include_client_uplinks": [uplink for uplink in os.getenv("UNIFI_INCLUDE_CLIENT_UPLINKS", "").split(",") if uplink],
+        "namespace": os.getenv("UNIFI_NAMESPACE", "Global"),
         "sites": [site for site in os.getenv("UNIFI_SITES", "").split(",") if site],
         "unifi_host": os.getenv("UNIFI_HOST", ""),
         "unifi_password": os.getenv("UNIFI_PASSWORD", ""),
@@ -100,10 +103,13 @@ The app behavior can be controlled with the following list of settings:
 | `exclude_client_uplinks` | `["WAN Switch"]` | `[]` | Skip clients connected through these UniFi switches or access points, by name or MAC address. |
 | `import_cables` | `False`               | `True`  | Whether to sync a Cable from each wired UniFi device and client to the switch port UniFi reports it on. |
 | `import_clients` | `False`              | `True`  | Whether to sync clients as Devices with the Client role. Clients with a randomized (locally administered) MAC address are skipped unless they have an alias in UniFi, because their MAC can change. |
+| `import_ip_addresses` | `False`         | `True`  | Whether to sync each UniFi network's subnet as a Prefix, and the IP address of each synced device and client, assigned to its Interface. |
+| `import_vlans`   | `False`              | `True`  | Whether to sync each site's networks as VLANs in a VLAN Group for the site, and the 802.1Q mode and VLANs of each UniFi switch port. |
 | `import_wireless` | `False`             | `True`  | Whether to sync the controller as a Controller, each site as a controller managed device group holding its UniFi devices, and WLANs as Wireless Networks assigned to their site's group. |
 | `import_wireless_clients` | `False`     | `True`  | Whether to sync wireless clients. Has no effect when `import_clients` is off. |
 | `include_client_networks` | `["Servers"]` | `[]` | Only sync clients on these UniFi networks, by name. Empty allows every network. |
 | `include_client_uplinks` | `["Office Switch"]` | `[]` | Only sync clients connected through these UniFi switches or access points, by name or MAC address. Empty allows every uplink. |
+| `namespace`      | `"Home"`             | `"Global"` | Namespace of the Prefixes and IP Addresses the sync creates and matches. It must exist. |
 | `sites`          | `["default"]`        | `[]`    | Limit the sync to these UniFi sites, by short name (the ID in the site's URL, e.g. `default`) or description. Empty syncs every site. Locations and Devices of sites left out are not changed or deleted. |
 | `unifi_host`     | `"unifi.example.com"` | N/A     | Hostname or IP address of the UniFi Network controller.      |
 | `unifi_password` | `"changeme"`         | N/A     | Password for the UniFi controller user.                       |

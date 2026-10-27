@@ -6,12 +6,18 @@ from nautobot_ssot_unifi.diffsync.models.base import (
     ControllerModel,
     DeviceModel,
     DeviceTypeModel,
+    InterfaceModel,
+    IPAddressAssignmentModel,
+    IPAddressModel,
     LocationModel,
     LocationTypeModel,
     ManufacturerModel,
     PlatformModel,
+    PrefixModel,
     RoleModel,
     SoftwareVersionModel,
+    VLANGroupModel,
+    VLANModel,
     WirelessNetworkAssignmentModel,
     WirelessNetworkModel,
 )
@@ -235,4 +241,106 @@ class UniFiCableModel(CableModel):
 
     def delete(self):
         """Delete Cable in UniFi from UniFiCableModel object."""
+        return self
+
+
+class UniFiPrefixModel(PrefixModel):
+    """UniFi implementation of Prefix DiffSync model."""
+
+    @classmethod
+    def create(cls, adapter, ids, attrs):
+        """Create Prefix in UniFi from UniFiPrefixModel object."""
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
+
+    def update(self, attrs):
+        """Update Prefix in UniFi from UniFiPrefixModel object."""
+        return super().update(attrs)
+
+    def delete(self):
+        """Delete Prefix in UniFi from UniFiPrefixModel object."""
+        return self
+
+
+class UniFiIPAddressModel(IPAddressModel):
+    """UniFi implementation of IPAddress DiffSync model."""
+
+    @classmethod
+    def create(cls, adapter, ids, attrs):
+        """Create IPAddress in UniFi from UniFiIPAddressModel object."""
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
+
+    def update(self, attrs):
+        """Update IPAddress in UniFi from UniFiIPAddressModel object."""
+        return super().update(attrs)
+
+    def delete(self):
+        """Delete IPAddress in UniFi from UniFiIPAddressModel object."""
+        return self
+
+
+class UniFiIPAddressAssignmentModel(IPAddressAssignmentModel):
+    """UniFi implementation of IPAddress assignment DiffSync model."""
+
+    @classmethod
+    def create(cls, adapter, ids, attrs):
+        """Create IPAddress assignment in UniFi from UniFiIPAddressAssignmentModel object."""
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
+
+    def update(self, attrs):
+        """Update IPAddress assignment in UniFi from UniFiIPAddressAssignmentModel object."""
+        return super().update(attrs)
+
+    def delete(self):
+        """Delete IPAddress assignment in UniFi from UniFiIPAddressAssignmentModel object."""
+        return self
+
+
+class UniFiVLANGroupModel(VLANGroupModel):
+    """UniFi implementation of VLANGroup DiffSync model."""
+
+    @classmethod
+    def create(cls, adapter, ids, attrs):
+        """Create VLANGroup in UniFi from UniFiVLANGroupModel object."""
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
+
+    def update(self, attrs):
+        """Update VLANGroup in UniFi from UniFiVLANGroupModel object."""
+        return super().update(attrs)
+
+    def delete(self):
+        """Delete VLANGroup in UniFi from UniFiVLANGroupModel object."""
+        return self
+
+
+class UniFiVLANModel(VLANModel):
+    """UniFi implementation of VLAN DiffSync model."""
+
+    @classmethod
+    def create(cls, adapter, ids, attrs):
+        """Create VLAN in UniFi from UniFiVLANModel object."""
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
+
+    def update(self, attrs):
+        """Update VLAN in UniFi from UniFiVLANModel object."""
+        return super().update(attrs)
+
+    def delete(self):
+        """Delete VLAN in UniFi from UniFiVLANModel object."""
+        return self
+
+
+class UniFiInterfaceModel(InterfaceModel):
+    """UniFi implementation of Interface DiffSync model."""
+
+    @classmethod
+    def create(cls, adapter, ids, attrs):
+        """Create Interface in UniFi from UniFiInterfaceModel object."""
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
+
+    def update(self, attrs):
+        """Update Interface in UniFi from UniFiInterfaceModel object."""
+        return super().update(attrs)
+
+    def delete(self):
+        """Delete Interface in UniFi from UniFiInterfaceModel object."""
         return self

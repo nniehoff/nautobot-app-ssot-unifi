@@ -10,7 +10,10 @@ from nautobot_ssot_unifi.utils.nautobot import (
     find_interface,
     find_unsynced_cable,
     find_unsynced_device_group,
+    find_unsynced_ip_address,
     find_unsynced_location,
+    find_unsynced_vlan,
+    find_unsynced_vlan_group,
     find_unsynced_wireless_network,
     is_synced_device,
 )
@@ -64,20 +67,23 @@ class UniFiDataSource(DataSource):
     def load_target_adapter(self):
         """Load data from Nautobot into DiffSync models.
 
-        Before loading, handle Locations, device groups, Wireless Networks, Devices, and Cables that already exist in Nautobot but were not synced
-        from this controller. After loading, keep Nautobot's values for the fields the sync only sets on
+        Before loading, handle Locations, device groups, Wireless Networks, VLANs, Devices, Cables, and IP Addresses
+        that already exist in Nautobot but were not synced from this controller. After loading, keep Nautobot's values for the fields the sync only sets on
         create, and drop the shared objects nothing needs any more.
         """
         self.handle_existing_locations()
         self.handle_existing_wireless()
+        self.handle_existing_vlans()
         unifi_macs = {device.mac_address for device in self.source_adapter.get_all("device")}
         adopt_pks = self.handle_existing_devices(unifi_macs)
         self.source_adapter.prune_unused()
         self.handle_existing_cables()
+        self.handle_existing_ip_addresses()
         self.target_adapter = UniFiNautobotAdapter(
             job=self,
             sync=self.sync,
             unifi_macs=unifi_macs,
+            unifi_ips={assignment.host for assignment in self.source_adapter.get_all("ipassignment")},
             adopt_pks=adopt_pks,
             sites=self.source_adapter.sites if get_selected_sites() else None,
         )
@@ -135,6 +141,38 @@ class UniFiDataSource(DataSource):
                 )
                 self.source_adapter.remove(wireless_network)
 
+    def handle_existing_vlans(self):
+        """Use existing VLAN Groups and VLANs instead of creating duplicates.
+
+        A VLAN Group named like a UniFi site that the sync did not create gets the site's new VLANs, without being
+        changed. A VLAN ID that Nautobot already has a VLAN for, usable by Devices in the site's Location, is not
+        created: switch ports use the existing VLAN, which is never changed.
+        """
+        for group in list(self.source_adapter.get_all("vlangroup")):
+            existing = find_unsynced_vlan_group(group.name, group.unifi_site)
+            if existing:
+                self.logger.warning(
+                    "VLAN Group %s already exists and was not synced from UniFi; adding site %s's VLANs to it "
+                    "without changing the group.",
+                    existing.name,
+                    group.unifi_site,
+                    extra={"object": existing},
+                )
+                self.source_adapter.remove(group)
+        existing = []
+        for vlan in list(self.source_adapter.get_all("vlan")):
+            # VLAN Groups are named after their site, like the site's Location.
+            found = find_unsynced_vlan(vlan.vid, vlan.vlan_group__name)
+            if found:
+                existing.append(found)
+                self.source_adapter.remove(vlan)
+        if existing:
+            self.logger.info(
+                "Using %s existing VLANs not synced from UniFi as they are: %s",
+                len(existing),
+                ", ".join(sorted(f"{vlan.vid} {vlan.name}" for vlan in existing)),
+            )
+
     def handle_existing_cables(self):
         """Leave Interfaces that already have a Cable the sync did not create alone, with a warning.
 
@@ -168,6 +206,30 @@ class UniFiDataSource(DataSource):
                     extra={"object": existing},
                 )
             self.source_adapter.remove(cable)
+
+    def handle_existing_ip_addresses(self):
+        """Assign IP Addresses that already exist in Nautobot to Interfaces as they are, instead of creating them.
+
+        The sync never changes or deletes them; only their assignments to the Interfaces of synced Devices.
+        """
+        existing = []
+        for ip_address in list(self.source_adapter.get_all("ipaddress")):
+            found = find_unsynced_ip_address(ip_address.host)
+            if found:
+                existing.append(found)
+                self.source_adapter.remove(ip_address)
+                if self.debug:
+                    self.logger.debug(
+                        "IP Address %s already exists and was not synced from UniFi; assigning it as is.",
+                        found,
+                        extra={"object": found},
+                    )
+        if existing:
+            self.logger.info(
+                "Assigning %s existing IP Addresses not synced from UniFi as they are: %s",
+                len(existing),
+                ", ".join(sorted(str(ip_address) for ip_address in existing)),
+            )
 
     def handle_existing_devices(self, unifi_macs) -> list:
         """Apply the `existing_devices` choice to Devices that share a MAC with UniFi but are not synced from here.

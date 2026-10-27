@@ -16,12 +16,28 @@ from nautobot.dcim.models import (
 )
 from nautobot.extras.choices import CustomFieldTypeChoices
 from nautobot.extras.models import CustomField, JobResult, Role, Status
+from nautobot.ipam.models import VLAN, IPAddress, IPAddressToInterface, Prefix, VLANGroup
 from nautobot.wireless.models import ControllerManagedDeviceGroupWirelessNetworkAssignment, WirelessNetwork
 
 from nautobot_ssot_unifi.constants import SYSTEM_OF_RECORD
 from nautobot_ssot_unifi.diffsync.adapters.nautobot import UniFiNautobotAdapter
-from nautobot_ssot_unifi.diffsync.models.base import CableModel, DeviceModel
+from nautobot_ssot_unifi.diffsync.models.base import (
+    CableModel,
+    DeviceModel,
+    InterfaceModel,
+    IPAddressAssignmentModel,
+    IPAddressModel,
+    PrefixModel,
+    VLANGroupModel,
+    VLANModel,
+)
 from nautobot_ssot_unifi.jobs import UniFiDataSource
+from nautobot_ssot_unifi.utils.nautobot import (
+    find_unsynced_ip_address,
+    find_unsynced_vlan,
+    find_vlan,
+    resolve_ip_interface_name,
+)
 from nautobot_ssot_unifi.utils.unifi import get_controller_name
 
 
@@ -38,10 +54,12 @@ class TestUniFiNautobotAdapterTestCase(TransactionTestCase):
         group_ct = ContentType.objects.get_for_model(ControllerManagedDeviceGroup)
         wireless_ct = ContentType.objects.get_for_model(WirelessNetwork)
         cable_ct = ContentType.objects.get_for_model(Cable)
+        ip_ct = ContentType.objects.get_for_model(IPAddress)
+        vlan_group_ct = ContentType.objects.get_for_model(VLANGroup)
         for key, content_types in (
-            ("system_of_record", [cable_ct, device_ct, wireless_ct]),
-            ("unifi_controller", [cable_ct, device_ct, location_ct, group_ct, wireless_ct]),
-            ("unifi_site", [location_ct, group_ct]),
+            ("system_of_record", [cable_ct, device_ct, ip_ct, wireless_ct]),
+            ("unifi_controller", [cable_ct, device_ct, ip_ct, location_ct, group_ct, vlan_group_ct, wireless_ct]),
+            ("unifi_site", [location_ct, group_ct, vlan_group_ct]),
         ):
             custom_field, _ = CustomField.objects.get_or_create(
                 key=key, defaults={"label": key, "type": CustomFieldTypeChoices.TYPE_TEXT}
@@ -54,13 +72,21 @@ class TestUniFiNautobotAdapterTestCase(TransactionTestCase):
         device_ct = ContentType.objects.get_for_model(Device)
 
         status, _ = Status.objects.get_or_create(name="Active")
-        status.content_types.add(device_ct, ContentType.objects.get_for_model(Interface))
+        status.content_types.add(
+            device_ct,
+            ContentType.objects.get_for_model(Interface),
+            ContentType.objects.get_for_model(IPAddress),
+            ContentType.objects.get_for_model(Prefix),
+            ContentType.objects.get_for_model(VLAN),
+        )
         connected, _ = Status.objects.get_or_create(name="Connected")
         connected.content_types.add(ContentType.objects.get_for_model(Cable))
         role, _ = Role.objects.get_or_create(name="Router")
         role.content_types.add(device_ct)
         location_type, _ = LocationType.objects.get_or_create(name="Site")
-        location_type.content_types.add(device_ct, ContentType.objects.get_for_model(Controller))
+        location_type.content_types.add(
+            device_ct, ContentType.objects.get_for_model(Controller), ContentType.objects.get_for_model(VLANGroup)
+        )
         status.content_types.add(ContentType.objects.get_for_model(Controller))
         location = Location.objects.create(name="Test", location_type=location_type, status=status)
         Location.objects.create(
@@ -227,3 +253,98 @@ class TestUniFiNautobotAdapterTestCase(TransactionTestCase):
                     "upstream_interface": "Port 3",
                 },
             )
+
+    def test_ip_addresses(self):
+        """IP Addresses are created under their Prefix and assigned; ones set up by hand keep their Interface."""
+        PrefixModel.create(
+            adapter=self.nautobot,
+            ids={"network": "192.168.1.0", "prefix_length": 24, "namespace__name": "Global"},
+            attrs={"status__name": "Active"},
+        )
+        IPAddressModel.create(
+            adapter=self.nautobot,
+            ids={"host": "192.168.1.20", "parent__namespace__name": "Global"},
+            attrs={
+                "mask_length": 24,
+                "status__name": "Active",
+                "type": "dhcp",
+                "system_of_record": SYSTEM_OF_RECORD,
+                "unifi_controller": get_controller_name(),
+            },
+        )
+        IPAddressAssignmentModel.create(
+            adapter=self.nautobot,
+            ids={"mac_address": "00:11:22:33:44:01", "host": "192.168.1.20"},
+            attrs={"interface": "mgmt"},
+        )
+        synced = IPAddress.objects.get(host="192.168.1.20")
+        self.assertEqual("192.168.1.0/24", str(synced.parent.prefix))
+        self.assertEqual(["mgmt"], [interface.name for interface in synced.interfaces.all()])
+
+        # Addresses set up by hand: one UniFi reports, already on eth0, and one it does not.
+        eth0 = Interface.objects.get(device__name="unifi-device", name="eth0")
+        for address in ("192.168.1.30/24", "192.168.1.40/24"):
+            manual = IPAddress.objects.create(address=address, status=Status.objects.get(name="Active"))
+            IPAddressToInterface.objects.create(ip_address=manual, interface=eth0)
+        self.assertEqual("eth0", resolve_ip_interface_name("00:11:22:33:44:01", "192.168.1.30", "mgmt"))
+        self.assertEqual("mgmt", resolve_ip_interface_name("00:11:22:33:44:01", "192.168.1.99", "eth0"))
+        self.assertIsNotNone(find_unsynced_ip_address("192.168.1.30"))
+        self.assertIsNone(find_unsynced_ip_address("192.168.1.20"))
+
+        nautobot = UniFiNautobotAdapter(job=self.nautobot.job, sync=None, unifi_ips={"192.168.1.30"})
+        nautobot.load()
+        self.assertEqual(["192.168.1.20"], [ip.host for ip in nautobot.get_all("ipaddress")])
+        self.assertEqual(
+            {("192.168.1.20", "mgmt"), ("192.168.1.30", "eth0")},
+            {(assignment.host, assignment.interface) for assignment in nautobot.get_all("ipassignment")},
+        )
+
+        nautobot.get("ipassignment", "00:11:22:33:44:01__192.168.1.20").update({"interface": "eth0"})
+        self.assertEqual(["eth0"], [interface.name for interface in synced.interfaces.all()])
+
+        # Deleting the IP Address removes its assignment, so deleting the assignment afterwards is a no-op.
+        nautobot.get("ipaddress", "192.168.1.20__Global").delete()
+        nautobot.get("ipassignment", "00:11:22:33:44:01__192.168.1.20").delete()
+        self.assertFalse(IPAddress.objects.filter(host="192.168.1.20").exists())
+        self.assertEqual(2, IPAddressToInterface.objects.filter(interface=eth0).count())
+
+    def test_switch_port_vlans(self):
+        """Switch ports get their mode and VLANs, preferring the site's synced VLANs over ones made by hand."""
+        VLANGroupModel.create(
+            adapter=self.nautobot,
+            ids={"unifi_site": "default", "unifi_controller": get_controller_name()},
+            # The group must be in the Devices' Location for them to use its VLANs.
+            attrs={"name": "UniFi Site", "location__name": "Test"},
+        )
+        for vid, name in ((1, "Default"), (20, "IoT")):
+            VLANModel.create(
+                adapter=self.nautobot,
+                ids={"vid": vid, "vlan_group__name": "UniFi Site"},
+                attrs={"name": name, "status__name": "Active"},
+            )
+        # A global VLAN made by hand: used for VLAN 30, which the site's group lacks, but not for VLAN 20.
+        manual = VLAN.objects.create(vid=30, name="Cameras", status=Status.objects.get(name="Active"))
+        VLAN.objects.create(vid=20, name="Manual IoT", status=Status.objects.get(name="Active"))
+        location = Location.objects.get(name="Test")
+        self.assertEqual("UniFi Site", find_vlan(20, location).vlan_group.name)
+        self.assertEqual(manual, find_vlan(30, location))
+        self.assertEqual(manual, find_unsynced_vlan(30, "Test"))
+
+        InterfaceModel.create(
+            adapter=self.nautobot,
+            ids={"mac_address": "00:11:22:33:44:01", "name": "Port 1"},
+            attrs={"type": "1000base-t", "mode": "tagged", "untagged_vid": 1, "tagged_vids": [20, 30]},
+        )
+        port = Interface.objects.get(device__name="unifi-device", name="Port 1")
+        self.assertEqual(("1000base-t", "tagged", 1), (port.type, port.mode, port.untagged_vlan.vid))
+        self.assertEqual({20, 30}, {vlan.vid for vlan in port.tagged_vlans.all()})
+
+        self.nautobot.load()
+        loaded = self.nautobot.get("interface", "00:11:22:33:44:01__Port 1")
+        self.assertEqual(("tagged", 1, [20, 30]), (loaded.mode, loaded.untagged_vid, loaded.tagged_vids))
+        self.assertEqual({1, 20}, {vlan.vid for vlan in self.nautobot.get_all("vlan")})
+
+        loaded.update({"mode": "access", "untagged_vid": 20, "tagged_vids": []})
+        port.refresh_from_db()
+        self.assertEqual(("access", 20), (port.mode, port.untagged_vlan.vid))
+        self.assertFalse(port.tagged_vlans.exists())
