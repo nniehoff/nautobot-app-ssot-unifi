@@ -1,0 +1,1 @@
+Fixed clients that share a hostname being merged into one Device, and skipped clients with randomized MAC addresses unless they have an alias in UniFi.

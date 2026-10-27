@@ -1,0 +1,1 @@
+Added syncing of device firmware as Platforms and Software Versions, and, with the new `import_wireless` setting (default on), the controller as a Controller, each site as a Controller Managed Device Group, and WLANs as Wireless Networks.

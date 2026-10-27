@@ -1,0 +1,1 @@
+Added the `sites` setting to limit the sync to some UniFi sites, and the `import_clients` and `import_wireless_clients` settings to choose which clients are synced.

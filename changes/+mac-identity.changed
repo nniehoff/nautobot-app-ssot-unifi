@@ -1,0 +1,1 @@
+Changed Device matching to the MAC address on the Device's Interfaces and Location matching to the new `unifi_site` Custom Field, so renames in UniFi update Nautobot instead of creating duplicates. New Devices get an Interface holding their MAC. Device names now come from the UniFi alias, then hostname, then MAC.

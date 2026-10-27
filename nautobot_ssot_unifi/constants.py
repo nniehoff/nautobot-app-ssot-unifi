@@ -1,5 +1,66 @@
 """Storage of data that will not change throughout the life cycle of the application."""
 
+# Value of the system_of_record custom field on objects this app manages. The
+# Nautobot adapter loads only Devices carrying it, so a sync never compares
+# against, or deletes, Devices that came from somewhere else.
+SYSTEM_OF_RECORD = "UniFi SSoT"
+
+# Interface created on each synced Device to hold its MAC address, which
+# identifies the Device. UniFi network devices get a management interface,
+# clients a plain one.
+DEVICE_INTERFACE_NAME = "mgmt"
+CLIENT_INTERFACE_NAME = "eth0"
+CLIENT_ROLE = "Client"
+
+# Status of the Cables the sync creates.
+CABLE_STATUS = "Connected"
+
+# Namespace of the Prefixes and IP Addresses the sync creates and matches,
+# unless the `namespace` setting names another.
+DEFAULT_NAMESPACE = "Global"
+
+# Kinds of UniFi devices whose ports are switch ports with VLAN settings.
+SWITCHING_DEVICE_TYPES = ("udm", "usw")
+
+# VLAN ID of a UniFi network without one: the default network, untagged on VLAN 1.
+DEFAULT_VLAN_ID = 1
+
+# UniFi network purposes that are Layer 2 networks, which can be on switch ports.
+VLAN_NETWORK_PURPOSES = ("corporate", "guest", "vlan-only")
+
+# UniFi names fiber ports by cage type and count, e.g. "SFP+ 2"; other ports "Port <n>".
+PORT_MEDIA_PREFIXES = ("SFP", "SFP+", "SFP28", "QSFP28")
+
+# Nautobot Interface type of a UniFi switch port, by the port's `media`. Only
+# used when the sync creates the Interface.
+INTERFACE_TYPE_MAP = {
+    "FE": "100base-tx",
+    "GE": "1000base-t",
+    "2P5GE": "2.5gbase-t",
+    "5GE": "5gbase-t",
+    "10GE": "10gbase-t",
+    "SFP": "1000base-x-sfp",
+    "SFP+": "10gbase-x-sfpp",
+    "SFP28": "25gbase-x-sfp28",
+    "QSFP28": "100gbase-x-qsfp28",
+}
+
+# Platform of each kind of UniFi device, by the `type` UniFi reports. UniFi
+# releases firmware per kind, so each gets its own Software Versions.
+PLATFORM_MAP = {
+    "uap": "UniFi Access Point",
+    "udm": "UniFi Gateway",
+    "ugw": "UniFi Gateway",
+    "usw": "UniFi Switch",
+    "uxg": "UniFi Gateway",
+}
+DEFAULT_PLATFORM = "UniFi Device"
+
+# UniFi access points bridge client traffic locally while the controller
+# manages them, which is what Nautobot calls Local (Flex) mode.
+WIRELESS_NETWORK_MODE = "Local (Flex)"
+WIRELESS_CAPABILITY = "wireless"
+
 # pulled from https://ubntwiki.com/products/software/unifi-controller/api
 DEVICETYPE_MAP = {
     "BZ2": "Access Point",

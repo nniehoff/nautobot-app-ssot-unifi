@@ -1,0 +1,1 @@
+Added the **Existing devices** job option to skip (default), adopt, or create alongside Devices already in Nautobot that share a MAC address with UniFi, with a warning for each. Existing Locations named like a UniFi site are used instead of creating a duplicate.

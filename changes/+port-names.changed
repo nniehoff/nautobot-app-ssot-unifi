@@ -1,0 +1,1 @@
+Changed the name of switch port Interfaces the sync creates to the name UniFi gives the port by default, e.g. `SFP+ 1` for fiber ports, and matched existing Interfaces by it.

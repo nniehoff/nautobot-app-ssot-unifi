@@ -7,7 +7,8 @@ Here you will find detailed instructions on how to **install** and **configure**
 
 ## Prerequisites
 
-- The plugin is compatible with Nautobot 2.0.0 and higher.
+- The app is compatible with Nautobot 2.4 LTS (2.4.22 or later) and Nautobot 3.x.
+- Python 3.14 requires Nautobot 3.x; Nautobot 2.4 supports Python 3.10 through 3.12.
 - Databases supported: PostgreSQL, MySQL
 
 !!! note
@@ -21,9 +22,9 @@ Here you will find detailed instructions on how to **install** and **configure**
 ## Install Guide
 
 !!! note
-    Plugins can be installed manually or using Python's `pip`. See the [nautobot documentation](https://nautobot.readthedocs.io/en/latest/plugins/#install-the-package) for more details. The pip package name for this plugin is [`nautobot-ssot-unifi`](https://pypi.org/project/nautobot-ssot-unifi/).
+    Apps can be installed manually or using Python's `pip`. See the [nautobot documentation](https://docs.nautobot.com/projects/core/en/stable/plugins/#install-the-package) for more details. The pip package name for this app is [`nautobot-ssot-unifi`](https://pypi.org/project/nautobot-ssot-unifi/).
 
-The plugin is available as a Python package via PyPI and can be installed with `pip`:
+The app is available as a Python package via PyPI and can be installed with `pip`:
 
 ```shell
 pip install nautobot-ssot-unifi
@@ -35,7 +36,7 @@ To ensure Nautobot SSoT UniFi is automatically re-installed during future upgrad
 echo nautobot-ssot-unifi >> local_requirements.txt
 ```
 
-Once installed, the plugin needs to be enabled in your Nautobot configuration. The following block of code below shows the additional configuration required to be added to your `nautobot_config.py` file:
+Once installed, the app needs to be enabled in your Nautobot configuration. The following block of code below shows the additional configuration required to be added to your `nautobot_config.py` file:
 
 - Append `"nautobot_ssot_unifi"` to the `PLUGINS` list.
 - Append the `"nautobot_ssot_unifi"` dictionary to the `PLUGINS_CONFIG` dictionary and override any defaults.
@@ -51,8 +52,26 @@ PLUGINS_CONFIG = {
     "nautobot_ssot": {
         "hide_example_jobs": True,
     },
-    'nautobot_ssot_unifi': {
-    #     ADD YOUR SETTINGS HERE
+    "nautobot_ssot_unifi": {
+        "controller_name": os.getenv("UNIFI_CONTROLLER_NAME", ""),
+        "exclude_client_networks": [network for network in os.getenv("UNIFI_EXCLUDE_CLIENT_NETWORKS", "").split(",") if network],
+        "exclude_client_uplinks": [uplink for uplink in os.getenv("UNIFI_EXCLUDE_CLIENT_UPLINKS", "").split(",") if uplink],
+        "import_cables": is_truthy(os.getenv("UNIFI_IMPORT_CABLES", "true")),
+        "import_clients": is_truthy(os.getenv("UNIFI_IMPORT_CLIENTS", "true")),
+        "import_ip_addresses": is_truthy(os.getenv("UNIFI_IMPORT_IP_ADDRESSES", "true")),
+        "import_vlans": is_truthy(os.getenv("UNIFI_IMPORT_VLANS", "true")),
+        "import_wireless": is_truthy(os.getenv("UNIFI_IMPORT_WIRELESS", "true")),
+        "import_wireless_clients": is_truthy(os.getenv("UNIFI_IMPORT_WIRELESS_CLIENTS", "true")),
+        "include_client_networks": [network for network in os.getenv("UNIFI_INCLUDE_CLIENT_NETWORKS", "").split(",") if network],
+        "include_client_uplinks": [uplink for uplink in os.getenv("UNIFI_INCLUDE_CLIENT_UPLINKS", "").split(",") if uplink],
+        "namespace": os.getenv("UNIFI_NAMESPACE", "Global"),
+        "sites": [site for site in os.getenv("UNIFI_SITES", "").split(",") if site],
+        "unifi_host": os.getenv("UNIFI_HOST", ""),
+        "unifi_password": os.getenv("UNIFI_PASSWORD", ""),
+        "unifi_port": int(os.getenv("UNIFI_PORT", "8443")),
+        "unifi_user": os.getenv("UNIFI_USER", ""),
+        "unifi_version": os.getenv("UNIFI_VERSION", "v5"),
+        "verify": is_truthy(os.getenv("UNIFI_VERIFY", "true")),
     },
 }
 ```
@@ -75,13 +94,26 @@ sudo systemctl restart nautobot nautobot-worker nautobot-scheduler
 
 ## App Configuration
 
-!!! warning "Developer Note - Remove Me!"
-    Any configuration required to get the App set up. Edit the table below as per the examples provided.
+The app behavior can be controlled with the following list of settings:
 
-The plugin behavior can be controlled with the following list of settings:
-
-| Key     | Example | Default | Description                          |
-| ------- | ------ | -------- | ------------------------------------- |
-| `enable_backup` | `True` | `True` | A boolean to represent whether or not to run backup configurations within the plugin. |
-| `platform_slug_map` | `{"cisco_wlc": "cisco_aireos"}` | `None` | A dictionary in which the key is the platform slug and the value is what netutils uses in any "network_os" parameter. |
-| `per_feature_bar_width` | `0.15` | `0.15` | The width of the table bar within the overview report |
+| Key              | Example              | Default | Description                                                   |
+| ---------------- | -------------------- | ------- | ------------------------------------------------------------- |
+| `controller_name` | `"home"`            | `unifi_host` | Name stored in each synced Device's UniFi Controller custom field. A sync only updates or deletes Devices with this controller's name, so several controllers can sync into one Nautobot. Set it to keep the name stable if the controller's address changes. |
+| `exclude_client_networks` | `["Guest"]` | `[]` | Skip clients on these UniFi networks, by name. |
+| `exclude_client_uplinks` | `["WAN Switch"]` | `[]` | Skip clients connected through these UniFi switches or access points, by name or MAC address. |
+| `import_cables` | `False`               | `True`  | Whether to sync a Cable from each wired UniFi device and client to the switch port UniFi reports it on. |
+| `import_clients` | `False`              | `True`  | Whether to sync clients as Devices with the Client role. Clients with a randomized (locally administered) MAC address are skipped unless they have an alias in UniFi, because their MAC can change. |
+| `import_ip_addresses` | `False`         | `True`  | Whether to sync each UniFi network's subnet as a Prefix, and the IP address of each synced device and client, assigned to its Interface. |
+| `import_vlans`   | `False`              | `True`  | Whether to sync each site's networks as VLANs in a VLAN Group for the site, and the 802.1Q mode and VLANs of each UniFi switch port. |
+| `import_wireless` | `False`             | `True`  | Whether to sync the controller as a Controller, each site as a controller managed device group holding its UniFi devices, and WLANs as Wireless Networks assigned to their site's group. |
+| `import_wireless_clients` | `False`     | `True`  | Whether to sync wireless clients. Has no effect when `import_clients` is off. |
+| `include_client_networks` | `["Servers"]` | `[]` | Only sync clients on these UniFi networks, by name. Empty allows every network. |
+| `include_client_uplinks` | `["Office Switch"]` | `[]` | Only sync clients connected through these UniFi switches or access points, by name or MAC address. Empty allows every uplink. |
+| `namespace`      | `"Home"`             | `"Global"` | Namespace of the Prefixes and IP Addresses the sync creates and matches. It must exist. |
+| `sites`          | `["default"]`        | `[]`    | Limit the sync to these UniFi sites, by short name (the ID in the site's URL, e.g. `default`) or description. Empty syncs every site. Locations and Devices of sites left out are not changed or deleted. |
+| `unifi_host`     | `"unifi.example.com"` | N/A     | Hostname or IP address of the UniFi Network controller.      |
+| `unifi_password` | `"changeme"`         | N/A     | Password for the UniFi controller user.                       |
+| `unifi_port`     | `8443`               | N/A     | Port of the UniFi controller API. Use `443` for UniFi OS consoles. |
+| `unifi_user`     | `"nautobot"`         | N/A     | Username for authenticating to the UniFi controller.          |
+| `unifi_version`  | `"UDMP-unifiOS"`     | `"v5"`  | Controller API flavor passed to pyunifi. Use `"UDMP-unifiOS"` for UniFi OS consoles and UniFi OS Server, `"v5"` for a standalone Network application. |
+| `verify`         | `True`               | N/A     | Whether to verify the controller's TLS certificate.           |

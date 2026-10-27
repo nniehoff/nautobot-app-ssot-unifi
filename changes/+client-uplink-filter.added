@@ -1,0 +1,1 @@
+Added the `include_client_uplinks`, `exclude_client_uplinks`, `include_client_networks`, and `exclude_client_networks` settings to choose clients by the switch or access point they connect through, or by network.

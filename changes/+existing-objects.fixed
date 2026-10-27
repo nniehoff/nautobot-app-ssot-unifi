@@ -1,0 +1,1 @@
+Fixed IP Addresses, Prefixes, VLANs, and Wireless Networks made by hand being missed as existing objects when they lack the SSoT custom fields or, for VLANs, a VLAN Group.

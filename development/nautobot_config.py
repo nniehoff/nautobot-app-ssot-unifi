@@ -1,15 +1,16 @@
 """Nautobot development configuration file."""
+
 import os
 import sys
 
 from nautobot.core.settings import *  # noqa: F403  # pylint: disable=wildcard-import,unused-wildcard-import
-from nautobot.core.settings_funcs import is_truthy, parse_redis_connection
+from nautobot.core.settings_funcs import is_truthy
 
 #
 # Debug
 #
 
-DEBUG = is_truthy(os.getenv("NAUTOBOT_DEBUG", False))
+DEBUG = is_truthy(os.getenv("NAUTOBOT_DEBUG", "false"))
 _TESTING = len(sys.argv) > 1 and sys.argv[1] == "test"
 
 if DEBUG and not _TESTING:
@@ -49,7 +50,7 @@ DATABASES = {
         "PORT": os.getenv(
             "NAUTOBOT_DB_PORT", default_db_settings[nautobot_db_engine]["NAUTOBOT_DB_PORT"]
         ),  # Database port, default to postgres
-        "CONN_MAX_AGE": int(os.getenv("NAUTOBOT_DB_TIMEOUT", 300)),  # Database timeout
+        "CONN_MAX_AGE": int(os.getenv("NAUTOBOT_DB_TIMEOUT", "300")),  # Database timeout
         "ENGINE": nautobot_db_engine,
     }
 }
@@ -63,19 +64,8 @@ if DATABASES["default"]["ENGINE"] == "django.db.backends.mysql":
 #
 
 # The django-redis cache is used to establish concurrent locks using Redis.
-CACHES = {
-    "default": {
-        "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": parse_redis_connection(redis_database=0),
-        "TIMEOUT": 300,
-        "OPTIONS": {
-            "CLIENT_CLASS": "django_redis.client.DefaultClient",
-        },
-    }
-}
-
-# Redis Cacheops
-CACHEOPS_REDIS = parse_redis_connection(redis_database=1)
+# Inherited from nautobot.core.settings
+# CACHES = {....}
 
 #
 # Celery settings are not defined here because they can be overloaded with
@@ -95,11 +85,11 @@ if not _TESTING:
         "disable_existing_loggers": False,
         "formatters": {
             "normal": {
-                "format": "%(asctime)s.%(msecs)03d %(levelname)-7s %(name)s :\n  %(message)s",
+                "format": "%(asctime)s.%(msecs)03d %(levelname)-7s %(name)s : %(message)s",
                 "datefmt": "%H:%M:%S",
             },
             "verbose": {
-                "format": "%(asctime)s.%(msecs)03d %(levelname)-7s %(name)-20s %(filename)-15s %(funcName)30s() :\n  %(message)s",
+                "format": "%(asctime)s.%(msecs)03d %(levelname)-7s %(name)-20s %(filename)-15s %(funcName)30s() : %(message)s",
                 "datefmt": "%H:%M:%S",
             },
         },
@@ -141,11 +131,32 @@ PLUGINS_CONFIG = {
         "hide_example_jobs": True,
     },
     "nautobot_ssot_unifi": {
+        "controller_name": os.getenv("UNIFI_CONTROLLER_NAME", ""),
+        "exclude_client_networks": [
+            network for network in os.getenv("UNIFI_EXCLUDE_CLIENT_NETWORKS", "").split(",") if network
+        ],
+        "exclude_client_uplinks": [
+            uplink for uplink in os.getenv("UNIFI_EXCLUDE_CLIENT_UPLINKS", "").split(",") if uplink
+        ],
+        "import_cables": is_truthy(os.getenv("UNIFI_IMPORT_CABLES", "true")),
+        "import_clients": is_truthy(os.getenv("UNIFI_IMPORT_CLIENTS", "true")),
+        "import_ip_addresses": is_truthy(os.getenv("UNIFI_IMPORT_IP_ADDRESSES", "true")),
+        "import_vlans": is_truthy(os.getenv("UNIFI_IMPORT_VLANS", "true")),
+        "import_wireless": is_truthy(os.getenv("UNIFI_IMPORT_WIRELESS", "true")),
+        "import_wireless_clients": is_truthy(os.getenv("UNIFI_IMPORT_WIRELESS_CLIENTS", "true")),
+        "include_client_networks": [
+            network for network in os.getenv("UNIFI_INCLUDE_CLIENT_NETWORKS", "").split(",") if network
+        ],
+        "include_client_uplinks": [
+            uplink for uplink in os.getenv("UNIFI_INCLUDE_CLIENT_UPLINKS", "").split(",") if uplink
+        ],
+        "namespace": os.getenv("UNIFI_NAMESPACE", "Global"),
+        "sites": [site for site in os.getenv("UNIFI_SITES", "").split(",") if site],
         "unifi_host": os.getenv("UNIFI_HOST", ""),
-        "unifi_user": os.getenv("UNIFI_USER", ""),
         "unifi_password": os.getenv("UNIFI_PASSWORD", ""),
-        "unifi_port": os.getenv("UNIFI_PORT", 8443),
-        "verify": is_truthy(os.getenv("UNIFI_VERIFY", False)),
-        "import_clients": is_truthy(os.getenv("UNIFI_IMPORT_CLIENTS", False)),
+        "unifi_port": int(os.getenv("UNIFI_PORT", "8443")),
+        "unifi_user": os.getenv("UNIFI_USER", ""),
+        "unifi_version": os.getenv("UNIFI_VERSION", "v5"),
+        "verify": is_truthy(os.getenv("UNIFI_VERIFY", "false")),
     },
 }
