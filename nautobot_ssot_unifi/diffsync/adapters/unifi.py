@@ -8,22 +8,49 @@ from diffsync import Adapter
 from diffsync.exceptions import ObjectNotFound
 from pyunifi.controller import Controller
 
-from nautobot_ssot_unifi.constants import CLIENT_ROLE, DEVICETYPE_MAP, SYSTEM_OF_RECORD
+from nautobot_ssot_unifi.constants import (
+    CLIENT_ROLE,
+    DEVICETYPE_MAP,
+    SYSTEM_OF_RECORD,
+    WIRELESS_CAPABILITY,
+    WIRELESS_NETWORK_MODE,
+)
+from nautobot_ssot_unifi.diffsync.models.base import TOP_LEVEL
 from nautobot_ssot_unifi.diffsync.models.unifi import (
+    UniFiControllerManagedDeviceGroupModel,
+    UniFiControllerModel,
     UniFiDeviceModel,
     UniFiDeviceTypeModel,
     UniFiLocationModel,
     UniFiLocationTypeModel,
     UniFiManufacturerModel,
+    UniFiPlatformModel,
     UniFiRoleModel,
+    UniFiSoftwareVersionModel,
+    UniFiWirelessNetworkAssignmentModel,
+    UniFiWirelessNetworkModel,
 )
 from nautobot_ssot_unifi.utils.unifi import (
     PLUGIN_CFG,
     get_controller_name,
+    get_platform,
     get_sites,
+    get_wlan_authentication,
     is_random_mac,
     is_site_selected,
 )
+
+
+def import_wireless() -> bool:
+    """Whether to sync the controller, its device groups, and wireless networks (`import_wireless`, default True)."""
+    return PLUGIN_CFG.get("import_wireless", True)
+
+
+def sorted_content_types(content_types) -> list:
+    """Deduplicate and sort content types, so lists holding the same ones compare equal."""
+    return sorted(
+        {(content_type["app_label"], content_type["model"]) for content_type in content_types},
+    )
 
 
 class UniFiAdapter(Adapter):
@@ -34,9 +61,15 @@ class UniFiAdapter(Adapter):
     manufacturer = UniFiManufacturerModel
     devicetype = UniFiDeviceTypeModel
     role = UniFiRoleModel
+    platform = UniFiPlatformModel
+    softwareversion = UniFiSoftwareVersionModel
+    controller = UniFiControllerModel
+    devicegroup = UniFiControllerManagedDeviceGroupModel
+    wirelessnetwork = UniFiWirelessNetworkModel
+    wirelessnetworkassignment = UniFiWirelessNetworkAssignmentModel
     device = UniFiDeviceModel
 
-    top_level = ["locationtype", "location", "manufacturer", "devicetype", "role", "device"]
+    top_level = TOP_LEVEL
 
     def __init__(self, *args, job=None, sync=None, client: Controller, **kwargs):
         """Initialize UniFi Controller.
@@ -57,12 +90,34 @@ class UniFiAdapter(Adapter):
         # MAC -> name of the UniFi devices in the site being read, to match clients' uplinks by name.
         self.uplink_names = {}
         self.controller_name = get_controller_name()
+        # Location Types of existing Locations the sync uses as is, kept by `prune_unused()` although no
+        # synced Location refers to them, so the content types UniFi objects need are added to them.
+        self.required_location_types = set()
+
+    @staticmethod
+    def location_content_types() -> list:
+        """Content types Locations of UniFi sites must allow: Devices, and the Controller when it is synced."""
+        content_types = [{"app_label": "dcim", "model": "device"}]
+        if import_wireless():
+            content_types.append({"app_label": "dcim", "model": "controller"})
+        return content_types
+
+    def load_location_type(self, name: str, required: bool = False):
+        """Load a Location Type allowing the content types UniFi objects in its Locations need.
+
+        Args:
+            name (str): Location Type name.
+            required (bool): Keep it even if no synced Location refers to it, for existing Locations used as is.
+        """
+        if required:
+            self.required_location_types.add(name)
+        self.get_or_instantiate(
+            self.locationtype, ids={"name": name}, attrs={"content_types": self.location_content_types()}
+        )
 
     def load_sites(self):
         """Load the selected Sites from UniFi as Locations, keyed by the site's short name."""
-        self.get_or_instantiate(
-            self.locationtype, ids={"name": "Site", "content_types": [{"app_label": "dcim", "model": "device"}]}
-        )
+        self.load_location_type("Site")
         for site in get_sites(conn=self.conn):
             if not is_site_selected(site):
                 if self.job.debug:
@@ -75,6 +130,75 @@ class UniFiAdapter(Adapter):
                 self.location,
                 ids={"unifi_site": site["name"], "unifi_controller": self.controller_name},
                 attrs={"name": site["desc"], "location_type__name": "Site", "status__name": "Active"},
+            )
+
+    def load_controller(self):
+        """Load the controller, placed in the first selected site's Location."""
+        if not import_wireless() or not self.sites:
+            return
+        self.get_or_instantiate(
+            self.controller,
+            ids={"name": self.controller_name},
+            attrs={
+                "location__name": self.sites[0]["desc"],
+                "status__name": "Active",
+                "capabilities": [WIRELESS_CAPABILITY],
+            },
+        )
+
+    def load_device_group(self, site: dict):
+        """Load a site's group of controller-managed devices, named after the site.
+
+        Args:
+            site (dict): Site the client is pointed at.
+        """
+        self.get_or_instantiate(
+            self.devicegroup,
+            ids={"unifi_site": site["name"], "unifi_controller": self.controller_name},
+            attrs={
+                "name": site["desc"],
+                "controller__name": self.controller_name,
+                "capabilities": [WIRELESS_CAPABILITY],
+            },
+        )
+
+    def load_wlans(self, site: dict):
+        """Load a site's WLANs as Wireless Networks assigned to the site's group. Passphrases are never read.
+
+        Args:
+            site (dict): Site the client is pointed at.
+        """
+        wlans = self.conn.get_wlan_conf()
+        self.job.logger.info("Found %s WLANs in UniFi site %s", len(wlans), site["desc"])
+        for wlan in wlans:
+            authentication = get_wlan_authentication(wlan)
+            if authentication is None:
+                self.job.logger.warning(
+                    "Skipping UniFi WLAN %s in site %s: Nautobot has no authentication matching security %r.",
+                    wlan["name"],
+                    site["desc"],
+                    wlan.get("security"),
+                )
+                continue
+            if self.job.debug:
+                self.job.logger.debug("Loaded UniFi WLAN %s (%s) in %s", wlan["name"], authentication, site["desc"])
+            self.get_or_instantiate(
+                self.wirelessnetwork,
+                ids={"name": wlan["name"]},
+                attrs={
+                    "ssid": wlan["name"],
+                    "mode": WIRELESS_NETWORK_MODE,
+                    "enabled": bool(wlan.get("enabled", True)),
+                    "authentication": authentication,
+                    "hidden": bool(wlan.get("hide_ssid", False)),
+                    "system_of_record": SYSTEM_OF_RECORD,
+                    "ssot_last_synchronized": datetime.today().date().isoformat(),
+                    "unifi_controller": self.controller_name,
+                },
+            )
+            self.get_or_instantiate(
+                self.wirelessnetworkassignment,
+                ids={"controller_managed_device_group__name": site["desc"], "wireless_network__name": wlan["name"]},
             )
 
     def load_manufacturer(self, manu_name: str = "Ubiquiti"):
@@ -109,6 +233,9 @@ class UniFiAdapter(Adapter):
                     "role": "Unknown",
                     "model": model,
                     "manufacturer": "Ubiquiti",
+                    "platform": get_platform(ap),
+                    "version": ap.get("version") or None,
+                    "group": site["desc"] if import_wireless() else None,
                 }
             )
         return records
@@ -177,6 +304,9 @@ class UniFiAdapter(Adapter):
                     "role": CLIENT_ROLE,
                     "model": "Unknown Device",
                     "manufacturer": client.get("oui") or "Unknown",
+                    "platform": None,
+                    "version": None,
+                    "group": None,
                 }
             )
         self.job.logger.info("Found %s clients in UniFi site %s, loading %s", len(clients), site["desc"], len(records))
@@ -207,6 +337,14 @@ class UniFiAdapter(Adapter):
                 ids={"name": record["role"]},
                 attrs={"content_types": [{"app_label": "dcim", "model": "device"}]},
             )
+            if record["platform"]:
+                self.get_or_instantiate(self.platform, ids={"name": record["platform"]})
+            if record["platform"] and record["version"]:
+                self.get_or_instantiate(
+                    self.softwareversion,
+                    ids={"platform__name": record["platform"], "version": record["version"]},
+                    attrs={"status__name": "Active"},
+                )
             self.get_or_instantiate(
                 self.device,
                 ids={"mac_address": record["mac"].lower()},
@@ -218,6 +356,10 @@ class UniFiAdapter(Adapter):
                     "device_type__model": record["model"],
                     "device_type__manufacturer__name": record["manufacturer"],
                     "status__name": "Active",
+                    "platform__name": record["platform"],
+                    "software_version__platform__name": record["platform"] if record["version"] else None,
+                    "software_version__version": record["version"],
+                    "controller_managed_device_group__name": record["group"],
                     "system_of_record": SYSTEM_OF_RECORD,
                     "ssot_last_synchronized": datetime.today().date().isoformat(),
                     "unifi_controller": self.controller_name,
@@ -227,44 +369,80 @@ class UniFiAdapter(Adapter):
     def load(self):
         """Load data from UniFi into DiffSync models."""
         self.load_sites()
+        self.load_controller()
         records = []
         # pyunifi reads one site at a time, and UniFi OS names sites with random IDs rather than "default".
         for site in self.sites:
             self.conn.site_id = site["name"]
+            if import_wireless():
+                self.load_device_group(site)
+                self.load_wlans(site)
             records.extend(self.get_unifi_devices(site))
             records.extend(self.get_clients(site))
         self.load_devices(records)
 
     def keep_nautobot_fields(self, target: Adapter):
-        """Copy the fields the sync only sets on create from Nautobot over the UniFi values, so they never diff.
+        """Copy the fields the sync only sets on create, or only adds to, from Nautobot over the UniFi values.
 
-        Applies to every Device and Location already in `target`: Role, Device Type, and Status of Devices,
-        serial when UniFi has none (clients), and Location Type and Status of Locations.
+        Devices already in `target` keep Role, Device Type, and Status, serial and Platform unless Nautobot
+        has none, and for clients also Platform, Software Version, and device group. Locations keep Location
+        Type and Status; the Controller keeps Location and Status. Content types of Location Types and Roles,
+        and Controller capabilities, become the union of both, so the sync only ever adds to them.
 
         Args:
             target (Adapter): Loaded Nautobot adapter.
         """
         for device in self.get_all(self.device):
-            try:
-                existing = target.get(self.device, device.get_unique_id())
-            except ObjectNotFound:
+            existing = self._get_existing(target, device)
+            if existing is None:
                 continue
+            if device.role__name == CLIENT_ROLE:
+                device.platform__name = existing.platform__name
+                device.software_version__platform__name = existing.software_version__platform__name
+                device.software_version__version = existing.software_version__version
+                device.controller_managed_device_group__name = existing.controller_managed_device_group__name
             device.role__name = existing.role__name
             device.device_type__model = existing.device_type__model
             device.device_type__manufacturer__name = existing.device_type__manufacturer__name
             device.status__name = existing.status__name
-            if not device.serial:
-                device.serial = existing.serial
+            device.serial = existing.serial or device.serial
+            device.platform__name = existing.platform__name or device.platform__name
         for location in self.get_all(self.location):
-            try:
-                existing = target.get(self.location, location.get_unique_id())
-            except ObjectNotFound:
-                continue
-            location.location_type__name = existing.location_type__name
-            location.status__name = existing.status__name
+            existing = self._get_existing(target, location)
+            if existing is not None:
+                location.location_type__name = existing.location_type__name
+                location.status__name = existing.status__name
+        for controller in self.get_all(self.controller):
+            existing = self._get_existing(target, controller)
+            if existing is not None:
+                controller.location__name = existing.location__name
+                controller.status__name = existing.status__name
+                controller.capabilities = sorted(set(controller.capabilities or []) | set(existing.capabilities or []))
+        for model in (self.locationtype, self.role):
+            for obj in self.get_all(model):
+                existing = self._get_existing(target, obj)
+                if existing is not None:
+                    merged = [
+                        {"app_label": app_label, "model": name}
+                        for app_label, name in sorted_content_types(obj.content_types + existing.content_types)
+                    ]
+                    obj.content_types = merged
+                    # Nautobot returns content types in no particular order; sort them so only additions diff.
+                    existing.content_types = [
+                        {"app_label": app_label, "model": name}
+                        for app_label, name in sorted_content_types(existing.content_types)
+                    ]
+
+    @staticmethod
+    def _get_existing(target: Adapter, obj):
+        """The object in `target` with the same identifiers as `obj`, or None."""
+        try:
+            return target.get(obj.__class__, obj.get_unique_id())
+        except ObjectNotFound:
+            return None
 
     def prune_unused(self):
-        """Drop Roles, Device Types, Manufacturers, and Location Types no remaining Device or Location needs.
+        """Drop Roles, Device Types, Manufacturers, Platforms, Software Versions, and Location Types nothing needs.
 
         Devices left out of the sync, and the Nautobot values kept by `keep_nautobot_fields()`, leave
         UniFi's versions of these unreferenced; without this the sync would create them for nothing.
@@ -273,16 +451,22 @@ class UniFiAdapter(Adapter):
         roles = {device.role__name for device in devices}
         device_types = {(device.device_type__model, device.device_type__manufacturer__name) for device in devices}
         manufacturers = {manufacturer for _, manufacturer in device_types}
+        versions = {
+            (device.software_version__platform__name, device.software_version__version)
+            for device in devices
+            if device.software_version__version
+        }
+        platforms = {device.platform__name for device in devices} | {platform for platform, _ in versions}
         location_types = {location.location_type__name for location in self.get_all(self.location)}
-        for role in list(self.get_all(self.role)):
-            if role.name not in roles:
-                self.remove(role)
-        for device_type in list(self.get_all(self.devicetype)):
-            if (device_type.model, device_type.manufacturer__name) not in device_types:
-                self.remove(device_type)
-        for manufacturer in list(self.get_all(self.manufacturer)):
-            if manufacturer.name not in manufacturers:
-                self.remove(manufacturer)
-        for location_type in list(self.get_all(self.locationtype)):
-            if location_type.name not in location_types:
-                self.remove(location_type)
+        location_types |= self.required_location_types
+        for model, keep in (
+            (self.role, lambda role: role.name in roles),
+            (self.devicetype, lambda dt: (dt.model, dt.manufacturer__name) in device_types),
+            (self.manufacturer, lambda manufacturer: manufacturer.name in manufacturers),
+            (self.softwareversion, lambda version: (version.platform__name, version.version) in versions),
+            (self.platform, lambda platform: platform.name in platforms),
+            (self.locationtype, lambda location_type: location_type.name in location_types),
+        ):
+            for obj in list(self.get_all(model)):
+                if not keep(obj):
+                    self.remove(obj)

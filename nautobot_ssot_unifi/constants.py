@@ -12,6 +12,22 @@ DEVICE_INTERFACE_NAME = "mgmt"
 CLIENT_INTERFACE_NAME = "eth0"
 CLIENT_ROLE = "Client"
 
+# Platform of each kind of UniFi device, by the `type` UniFi reports. UniFi
+# releases firmware per kind, so each gets its own Software Versions.
+PLATFORM_MAP = {
+    "uap": "UniFi Access Point",
+    "udm": "UniFi Gateway",
+    "ugw": "UniFi Gateway",
+    "usw": "UniFi Switch",
+    "uxg": "UniFi Gateway",
+}
+DEFAULT_PLATFORM = "UniFi Device"
+
+# UniFi access points bridge client traffic locally while the controller
+# manages them, which is what Nautobot calls Local (Flex) mode.
+WIRELESS_NETWORK_MODE = "Local (Flex)"
+WIRELESS_CAPABILITY = "wireless"
+
 # pulled from https://ubntwiki.com/products/software/unifi-controller/api
 DEVICETYPE_MAP = {
     "BZ2": "Access Point",

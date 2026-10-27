@@ -2,7 +2,8 @@
 
 from collections import defaultdict
 
-from nautobot.dcim.models import Interface, Location
+from nautobot.dcim.models import ControllerManagedDeviceGroup, Interface, Location
+from nautobot.wireless.models import WirelessNetwork
 
 from nautobot_ssot_unifi.constants import SYSTEM_OF_RECORD
 from nautobot_ssot_unifi.utils.unifi import get_controller_name
@@ -57,3 +58,40 @@ def find_unsynced_location(name: str, unifi_site: str):
     if synced.exists():
         return None
     return Location.objects.filter(name=name).first()
+
+
+def find_unsynced_device_group(name: str, unifi_site: str):
+    """Find a controller-managed device group with a UniFi site's name that a sync from this controller does not manage.
+
+    Args:
+        name (str): The UniFi site's description, used as the group name.
+        unifi_site (str): The UniFi site's short name.
+
+    Returns:
+        ControllerManagedDeviceGroup: The colliding group, or None.
+    """
+    synced = ControllerManagedDeviceGroup.objects.filter(
+        _custom_field_data__unifi_controller=get_controller_name(), _custom_field_data__unifi_site=unifi_site
+    )
+    if synced.exists():
+        return None
+    return ControllerManagedDeviceGroup.objects.filter(name=name).first()
+
+
+def find_unsynced_wireless_network(name: str):
+    """Find a Wireless Network named like a UniFi WLAN that was not synced from this controller.
+
+    Args:
+        name (str): The WLAN's SSID, used as the Wireless Network name.
+
+    Returns:
+        WirelessNetwork: The colliding Wireless Network, or None.
+    """
+    return (
+        WirelessNetwork.objects.filter(name=name)
+        .exclude(
+            _custom_field_data__system_of_record=SYSTEM_OF_RECORD,
+            _custom_field_data__unifi_controller=get_controller_name(),
+        )
+        .first()
+    )

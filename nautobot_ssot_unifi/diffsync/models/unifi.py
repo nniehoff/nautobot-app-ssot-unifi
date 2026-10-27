@@ -1,12 +1,18 @@
 """DiffSync models for Nautobot SSoT UniFi."""
 
 from nautobot_ssot_unifi.diffsync.models.base import (
+    ControllerManagedDeviceGroupModel,
+    ControllerModel,
     DeviceModel,
     DeviceTypeModel,
     LocationModel,
     LocationTypeModel,
     ManufacturerModel,
+    PlatformModel,
     RoleModel,
+    SoftwareVersionModel,
+    WirelessNetworkAssignmentModel,
+    WirelessNetworkModel,
 )
 
 
@@ -109,4 +115,106 @@ class UniFiDeviceModel(DeviceModel):
 
     def delete(self):
         """Delete Device in UniFi from UniFiDevice object."""
+        return self
+
+
+class UniFiPlatformModel(PlatformModel):
+    """UniFi implementation of Platform DiffSync model."""
+
+    @classmethod
+    def create(cls, adapter, ids, attrs):
+        """Create Platform in UniFi from UniFiPlatformModel object."""
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
+
+    def update(self, attrs):
+        """Update Platform in UniFi from UniFiPlatformModel object."""
+        return super().update(attrs)
+
+    def delete(self):
+        """Delete Platform in UniFi from UniFiPlatformModel object."""
+        return self
+
+
+class UniFiSoftwareVersionModel(SoftwareVersionModel):
+    """UniFi implementation of SoftwareVersion DiffSync model."""
+
+    @classmethod
+    def create(cls, adapter, ids, attrs):
+        """Create SoftwareVersion in UniFi from UniFiSoftwareVersionModel object."""
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
+
+    def update(self, attrs):
+        """Update SoftwareVersion in UniFi from UniFiSoftwareVersionModel object."""
+        return super().update(attrs)
+
+    def delete(self):
+        """Delete SoftwareVersion in UniFi from UniFiSoftwareVersionModel object."""
+        return self
+
+
+class UniFiControllerModel(ControllerModel):
+    """UniFi implementation of Controller DiffSync model."""
+
+    @classmethod
+    def create(cls, adapter, ids, attrs):
+        """Create Controller in UniFi from UniFiControllerModel object."""
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
+
+    def update(self, attrs):
+        """Update Controller in UniFi from UniFiControllerModel object."""
+        return super().update(attrs)
+
+    def delete(self):
+        """Delete Controller in UniFi from UniFiControllerModel object."""
+        return self
+
+
+class UniFiControllerManagedDeviceGroupModel(ControllerManagedDeviceGroupModel):
+    """UniFi implementation of ControllerManagedDeviceGroup DiffSync model."""
+
+    @classmethod
+    def create(cls, adapter, ids, attrs):
+        """Create ControllerManagedDeviceGroup in UniFi from UniFiControllerManagedDeviceGroupModel object."""
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
+
+    def update(self, attrs):
+        """Update ControllerManagedDeviceGroup in UniFi from UniFiControllerManagedDeviceGroupModel object."""
+        return super().update(attrs)
+
+    def delete(self):
+        """Delete ControllerManagedDeviceGroup in UniFi from UniFiControllerManagedDeviceGroupModel object."""
+        return self
+
+
+class UniFiWirelessNetworkModel(WirelessNetworkModel):
+    """UniFi implementation of WirelessNetwork DiffSync model."""
+
+    @classmethod
+    def create(cls, adapter, ids, attrs):
+        """Create WirelessNetwork in UniFi from UniFiWirelessNetworkModel object."""
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
+
+    def update(self, attrs):
+        """Update WirelessNetwork in UniFi from UniFiWirelessNetworkModel object."""
+        return super().update(attrs)
+
+    def delete(self):
+        """Delete WirelessNetwork in UniFi from UniFiWirelessNetworkModel object."""
+        return self
+
+
+class UniFiWirelessNetworkAssignmentModel(WirelessNetworkAssignmentModel):
+    """UniFi implementation of WirelessNetwork assignment DiffSync model."""
+
+    @classmethod
+    def create(cls, adapter, ids, attrs):
+        """Create WirelessNetwork assignment in UniFi from UniFiWirelessNetworkAssignmentModel object."""
+        return super().create(adapter=adapter, ids=ids, attrs=attrs)
+
+    def update(self, attrs):
+        """Update WirelessNetwork assignment in UniFi from UniFiWirelessNetworkAssignmentModel object."""
+        return super().update(attrs)
+
+    def delete(self):
+        """Delete WirelessNetwork assignment in UniFi from UniFiWirelessNetworkAssignmentModel object."""
         return self

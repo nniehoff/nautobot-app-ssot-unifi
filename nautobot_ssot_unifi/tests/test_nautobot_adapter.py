@@ -2,9 +2,19 @@
 
 from django.contrib.contenttypes.models import ContentType
 from nautobot.core.testing import TransactionTestCase
-from nautobot.dcim.models import Device, DeviceType, Interface, Location, LocationType, Manufacturer
+from nautobot.dcim.models import (
+    Controller,
+    ControllerManagedDeviceGroup,
+    Device,
+    DeviceType,
+    Interface,
+    Location,
+    LocationType,
+    Manufacturer,
+)
 from nautobot.extras.choices import CustomFieldTypeChoices
 from nautobot.extras.models import CustomField, JobResult, Role, Status
+from nautobot.wireless.models import ControllerManagedDeviceGroupWirelessNetworkAssignment, WirelessNetwork
 
 from nautobot_ssot_unifi.constants import SYSTEM_OF_RECORD
 from nautobot_ssot_unifi.diffsync.adapters.nautobot import UniFiNautobotAdapter
@@ -23,10 +33,12 @@ class TestUniFiNautobotAdapterTestCase(TransactionTestCase):
         """Create the Custom Fields the app's signal handler creates on a real install."""
         device_ct = ContentType.objects.get_for_model(Device)
         location_ct = ContentType.objects.get_for_model(Location)
+        group_ct = ContentType.objects.get_for_model(ControllerManagedDeviceGroup)
+        wireless_ct = ContentType.objects.get_for_model(WirelessNetwork)
         for key, content_types in (
-            ("system_of_record", [device_ct]),
-            ("unifi_controller", [device_ct, location_ct]),
-            ("unifi_site", [location_ct]),
+            ("system_of_record", [device_ct, wireless_ct]),
+            ("unifi_controller", [device_ct, location_ct, group_ct, wireless_ct]),
+            ("unifi_site", [location_ct, group_ct]),
         ):
             custom_field, _ = CustomField.objects.get_or_create(
                 key=key, defaults={"label": key, "type": CustomFieldTypeChoices.TYPE_TEXT}
@@ -43,7 +55,8 @@ class TestUniFiNautobotAdapterTestCase(TransactionTestCase):
         role, _ = Role.objects.get_or_create(name="Router")
         role.content_types.add(device_ct)
         location_type, _ = LocationType.objects.get_or_create(name="Site")
-        location_type.content_types.add(device_ct)
+        location_type.content_types.add(device_ct, ContentType.objects.get_for_model(Controller))
+        status.content_types.add(ContentType.objects.get_for_model(Controller))
         location = Location.objects.create(name="Test", location_type=location_type, status=status)
         Location.objects.create(
             name="UniFi Site",
@@ -124,3 +137,41 @@ class TestUniFiNautobotAdapterTestCase(TransactionTestCase):
         self.assertEqual(("mgmt", True), (interface.name, interface.mgmt_only))
         self.nautobot.load()
         self.assertIn("00:11:22:33:44:aa", {dev.get_unique_id() for dev in self.nautobot.get_all("device")})
+
+    def test_load_only_unifi_wireless(self):
+        """Only this controller, its groups, the Wireless Networks it synced, and their assignments are loaded."""
+        location = Location.objects.get(name="UniFi Site")
+        controller = Controller.objects.create(
+            name=get_controller_name(), location=location, status=Status.objects.get(name="Active")
+        )
+        other_controller = Controller.objects.create(
+            name="other-controller.example.com", location=location, status=Status.objects.get(name="Active")
+        )
+        group = ControllerManagedDeviceGroup.objects.create(
+            name="UniFi Site",
+            controller=controller,
+            _custom_field_data={"unifi_site": "default", "unifi_controller": get_controller_name()},
+        )
+        ControllerManagedDeviceGroup.objects.create(name="Other Group", controller=other_controller)
+        synced = WirelessNetwork.objects.create(
+            name="Home",
+            ssid="Home",
+            mode="Local (Flex)",
+            authentication="WPA2 Personal",
+            _custom_field_data={"system_of_record": SYSTEM_OF_RECORD, "unifi_controller": get_controller_name()},
+        )
+        manual = WirelessNetwork.objects.create(
+            name="Manual", ssid="Manual", mode="Central", authentication="WPA2 Enterprise"
+        )
+        for wireless_network in (synced, manual):
+            ControllerManagedDeviceGroupWirelessNetworkAssignment.objects.create(
+                controller_managed_device_group=group, wireless_network=wireless_network
+            )
+        self.nautobot.load()
+        self.assertEqual([get_controller_name()], [obj.name for obj in self.nautobot.get_all("controller")])
+        self.assertEqual(["UniFi Site"], [obj.name for obj in self.nautobot.get_all("devicegroup")])
+        self.assertEqual(["Home"], [obj.name for obj in self.nautobot.get_all("wirelessnetwork")])
+        self.assertEqual(
+            {"UniFi Site__Home", "UniFi Site__Manual"},
+            {obj.get_unique_id() for obj in self.nautobot.get_all("wirelessnetworkassignment")},
+        )

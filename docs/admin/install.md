@@ -57,6 +57,7 @@ PLUGINS_CONFIG = {
         "exclude_client_networks": [network for network in os.getenv("UNIFI_EXCLUDE_CLIENT_NETWORKS", "").split(",") if network],
         "exclude_client_uplinks": [uplink for uplink in os.getenv("UNIFI_EXCLUDE_CLIENT_UPLINKS", "").split(",") if uplink],
         "import_clients": is_truthy(os.getenv("UNIFI_IMPORT_CLIENTS", "true")),
+        "import_wireless": is_truthy(os.getenv("UNIFI_IMPORT_WIRELESS", "true")),
         "import_wireless_clients": is_truthy(os.getenv("UNIFI_IMPORT_WIRELESS_CLIENTS", "true")),
         "include_client_networks": [network for network in os.getenv("UNIFI_INCLUDE_CLIENT_NETWORKS", "").split(",") if network],
         "include_client_uplinks": [uplink for uplink in os.getenv("UNIFI_INCLUDE_CLIENT_UPLINKS", "").split(",") if uplink],
@@ -97,6 +98,7 @@ The app behavior can be controlled with the following list of settings:
 | `exclude_client_networks` | `["Guest"]` | `[]` | Skip clients on these UniFi networks, by name. |
 | `exclude_client_uplinks` | `["WAN Switch"]` | `[]` | Skip clients connected through these UniFi switches or access points, by name or MAC address. |
 | `import_clients` | `False`              | `True`  | Whether to sync clients as Devices with the Client role. Clients with a randomized (locally administered) MAC address are skipped unless they have an alias in UniFi, because their MAC can change. |
+| `import_wireless` | `False`             | `True`  | Whether to sync the controller as a Controller, each site as a controller managed device group holding its UniFi devices, and WLANs as Wireless Networks assigned to their site's group. |
 | `import_wireless_clients` | `False`     | `True`  | Whether to sync wireless clients. Has no effect when `import_clients` is off. |
 | `include_client_networks` | `["Servers"]` | `[]` | Only sync clients on these UniFi networks, by name. Empty allows every network. |
 | `include_client_uplinks` | `["Office Switch"]` | `[]` | Only sync clients connected through these UniFi switches or access points, by name or MAC address. Empty allows every uplink. |

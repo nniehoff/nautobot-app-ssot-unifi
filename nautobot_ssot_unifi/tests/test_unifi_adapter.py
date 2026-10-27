@@ -8,7 +8,7 @@ from nautobot.extras.models import JobResult
 
 from nautobot_ssot_unifi.diffsync.adapters.unifi import UniFiAdapter
 from nautobot_ssot_unifi.jobs import UniFiDataSource
-from nautobot_ssot_unifi.utils.unifi import PLUGIN_CFG, get_controller_name
+from nautobot_ssot_unifi.utils.unifi import PLUGIN_CFG, get_controller_name, get_wlan_authentication
 
 
 def load_json(path):
@@ -19,6 +19,7 @@ def load_json(path):
 
 SITE_FIXTURE = load_json("./nautobot_ssot_unifi/tests/fixtures/get_sites.json")
 AP_FIXTURE = load_json("./nautobot_ssot_unifi/tests/fixtures/get_aps.json")
+WLAN_FIXTURE = load_json("./nautobot_ssot_unifi/tests/fixtures/get_wlanconf.json")
 
 
 class TestUniFiAdapterTestCase(TransactionTestCase):
@@ -32,6 +33,7 @@ class TestUniFiAdapterTestCase(TransactionTestCase):
         self.unifi_client = MagicMock()
         self.unifi_client.get_aps.return_value = AP_FIXTURE
         self.unifi_client.get_clients.return_value = []
+        self.unifi_client.get_wlan_conf.return_value = WLAN_FIXTURE
 
         self.job = self.job_class()
         self.job.job_result = JobResult.objects.create(
@@ -189,3 +191,100 @@ class TestUniFiAdapterTestCase(TransactionTestCase):
         self.assertEqual([], self.unifi.get_all("role"))
         self.assertEqual([], self.unifi.get_all("devicetype"))
         self.assertEqual([], self.unifi.get_all("manufacturer"))
+
+    @patch("nautobot_ssot_unifi.diffsync.adapters.unifi.get_sites")
+    def test_load_wireless_and_software(self, mock_get_sites):
+        """The controller, a group per site, WLANs, and device Platforms and Software Versions are loaded."""
+        mock_get_sites.return_value = SITE_FIXTURE
+        self.unifi.load()
+        controller = self.unifi.get("controller", get_controller_name())
+        self.assertEqual(("Test", ["wireless"]), (controller.location__name, controller.capabilities))
+        group = self.unifi.get_all("devicegroup")[0]
+        self.assertEqual(
+            ("default", "Test", get_controller_name()), (group.unifi_site, group.name, group.controller__name)
+        )
+        self.assertEqual(
+            {("Home", "WPA3 Personal", True, False), ("Guest", "WPA2 Personal", False, True)},
+            {
+                (wlan.ssid, wlan.authentication, wlan.enabled, wlan.hidden)
+                for wlan in self.unifi.get_all("wirelessnetwork")
+            },
+        )
+        self.assertEqual(
+            {("Test", "Home"), ("Test", "Guest")},
+            {
+                (assignment.controller_managed_device_group__name, assignment.wireless_network__name)
+                for assignment in self.unifi.get_all("wirelessnetworkassignment")
+            },
+        )
+        device = self.unifi.get("device", AP_FIXTURE[0]["mac"])
+        self.assertEqual(
+            ("UniFi Gateway", "UniFi Gateway", "4.4.57.5578372", "Test"),
+            (
+                device.platform__name,
+                device.software_version__platform__name,
+                device.software_version__version,
+                device.controller_managed_device_group__name,
+            ),
+        )
+        self.assertEqual(
+            {"UniFi Gateway__4.4.57.5578372"},
+            {version.get_unique_id() for version in self.unifi.get_all("softwareversion")},
+        )
+        self.assertEqual(
+            [{"app_label": "dcim", "model": "device"}, {"app_label": "dcim", "model": "controller"}],
+            self.unifi.get("locationtype", "Site").content_types,
+        )
+
+    @patch.dict(PLUGIN_CFG, {"import_wireless": False})
+    @patch("nautobot_ssot_unifi.diffsync.adapters.unifi.get_sites")
+    def test_load_without_wireless(self, mock_get_sites):
+        """With `import_wireless` off, no controller, groups, or WLANs are read or loaded."""
+        mock_get_sites.return_value = SITE_FIXTURE
+        self.unifi.load()
+        self.unifi_client.get_wlan_conf.assert_not_called()
+        for model in ("controller", "devicegroup", "wirelessnetwork", "wirelessnetworkassignment"):
+            self.assertEqual([], self.unifi.get_all(model))
+        self.assertIsNone(self.unifi.get("device", AP_FIXTURE[0]["mac"]).controller_managed_device_group__name)
+
+    def test_get_wlan_authentication(self):
+        """UniFi security settings map to Nautobot authentication; transition mode maps to WPA2."""
+        for wlan, expected in (
+            ({"security": "open"}, "Open"),
+            ({"security": "wpapsk"}, "WPA2 Personal"),
+            ({"security": "wpapsk", "wpa3_support": True, "wpa3_transition": True}, "WPA2 Personal"),
+            ({"security": "wpapsk", "wpa3_support": True}, "WPA3 Personal"),
+            ({"security": "wpaeap"}, "WPA2 Enterprise"),
+            ({"security": "wpaeap", "wpa3_support": True}, "WPA3 Enterprise"),
+            ({"security": "wpaeap", "wpa3_support": True, "wpa3_enhanced_192": True}, "WPA3 Enterprise 192Bit"),
+            ({"security": "wep"}, None),
+        ):
+            self.assertEqual(expected, get_wlan_authentication(wlan), wlan)
+
+    def test_keep_nautobot_fields_platform_and_content_types(self):
+        """Devices keep Nautobot's Platform; content types only grow; unused Platforms and versions are dropped."""
+        self.unifi.load_location_type("Site")
+        self.unifi.load_devices(self.unifi.get_unifi_devices(SITE_FIXTURE[0]))
+        target = UniFiAdapter(job=self.job, sync=None, client=MagicMock())
+        target.add(target.locationtype(name="Site", content_types=[{"app_label": "dcim", "model": "rack"}]))
+        target.add(
+            target.device(
+                mac_address=AP_FIXTURE[0]["mac"],
+                name="usg",
+                location__name="Test",
+                role__name="Router",
+                device_type__model="UGW3",
+                device_type__manufacturer__name="Ubiquiti",
+                status__name="Active",
+                platform__name="vyos",
+            )
+        )
+        self.unifi.keep_nautobot_fields(target)
+        self.unifi.prune_unused()
+        device = self.unifi.get("device", AP_FIXTURE[0]["mac"])
+        self.assertEqual(("vyos", "UniFi Gateway"), (device.platform__name, device.software_version__platform__name))
+        self.assertEqual({"UniFi Gateway"}, {platform.name for platform in self.unifi.get_all("platform")})
+        self.assertEqual(
+            {("dcim", "controller"), ("dcim", "device"), ("dcim", "rack")},
+            {(ct["app_label"], ct["model"]) for ct in self.unifi.get("locationtype", "Site").content_types},
+        )

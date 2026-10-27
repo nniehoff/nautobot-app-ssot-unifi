@@ -1,7 +1,11 @@
 """Utility functions for working with UniFi."""
 
+from typing import Optional
+
 from django.conf import settings
 from pyunifi.controller import Controller
+
+from nautobot_ssot_unifi.constants import DEFAULT_PLATFORM, PLATFORM_MAP
 
 PLUGIN_CFG = settings.PLUGINS_CONFIG["nautobot_ssot_unifi"]
 
@@ -78,3 +82,39 @@ def is_random_mac(mac: str) -> bool:
         bool: True if the locally administered bit of the first octet is set.
     """
     return bool(int(mac.split(":")[0], 16) & 0x02)
+
+
+def get_platform(device: dict) -> str:
+    """Platform of a UniFi network device, one per kind of device since UniFi releases firmware per kind.
+
+    Args:
+        device (dict): Device from the UniFi `stat/device` endpoint.
+
+    Returns:
+        str: Platform name, e.g. "UniFi Switch".
+    """
+    return PLATFORM_MAP.get(device.get("type"), DEFAULT_PLATFORM)
+
+
+def get_wlan_authentication(wlan: dict) -> Optional[str]:
+    """Nautobot Wireless Network authentication matching a UniFi WLAN's security settings.
+
+    WPA2/WPA3 transition mode maps to the WPA2 variant, the weakest security clients may use.
+
+    Args:
+        wlan (dict): WLAN from the UniFi `list/wlanconf` endpoint.
+
+    Returns:
+        Optional[str]: Authentication choice, or None for security Nautobot has no choice for, such as WEP.
+    """
+    wpa3_only = wlan.get("wpa3_support") and not wlan.get("wpa3_transition")
+    security = wlan.get("security")
+    if security == "open":
+        return "Open"
+    if security == "wpapsk":
+        return "WPA3 Personal" if wpa3_only else "WPA2 Personal"
+    if security == "wpaeap":
+        if wlan.get("wpa3_enhanced_192"):
+            return "WPA3 Enterprise 192Bit"
+        return "WPA3 Enterprise" if wpa3_only else "WPA2 Enterprise"
+    return None

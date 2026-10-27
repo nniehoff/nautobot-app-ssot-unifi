@@ -8,8 +8,20 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Q
 from nautobot.dcim.choices import InterfaceTypeChoices
-from nautobot.dcim.models import Device, DeviceType, Interface, Location, LocationType, Manufacturer
+from nautobot.dcim.models import (
+    Controller,
+    ControllerManagedDeviceGroup,
+    Device,
+    DeviceType,
+    Interface,
+    Location,
+    LocationType,
+    Manufacturer,
+    Platform,
+    SoftwareVersion,
+)
 from nautobot.extras.models import Role, Status
+from nautobot.wireless.models import ControllerManagedDeviceGroupWirelessNetworkAssignment, WirelessNetwork
 from nautobot_ssot.contrib import CustomFieldAnnotation, NautobotModel
 from typing_extensions import TypedDict
 
@@ -20,6 +32,22 @@ from nautobot_ssot_unifi.constants import (
     SYSTEM_OF_RECORD,
 )
 from nautobot_ssot_unifi.utils.unifi import get_controller_name, get_selected_sites
+
+# Load and sync order of the models in both adapters: every model after the ones it refers to.
+TOP_LEVEL = [
+    "locationtype",
+    "location",
+    "controller",
+    "devicegroup",
+    "wirelessnetwork",
+    "wirelessnetworkassignment",
+    "manufacturer",
+    "devicetype",
+    "role",
+    "platform",
+    "softwareversion",
+    "device",
+]
 
 
 class ContentTypeDict(TypedDict):
@@ -133,6 +161,188 @@ class RoleModel(NautobotModel):
     content_types: List[ContentTypeDict] = []
 
 
+class PlatformModel(NautobotModel):
+    """DiffSync model for the Platform of each kind of UniFi device."""
+
+    # Shared with other Systems of Record: create what UniFi needs, never
+    # delete what UniFi does not know about.
+    model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
+
+    _model = Platform
+    _modelname = "platform"
+    _identifiers = ("name",)
+    _attributes = ()
+    _children = {}
+
+    name: str
+
+
+class SoftwareVersionModel(NautobotModel):
+    """DiffSync model for UniFi device firmware versions."""
+
+    # Versions no device runs any more are kept as history.
+    model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
+
+    _model = SoftwareVersion
+    _modelname = "softwareversion"
+    _identifiers = ("platform__name", "version")
+    _attributes = ("status__name",)
+    _children = {}
+
+    platform__name: str
+    version: str
+    status__name: str
+
+
+class ControllerModel(NautobotModel):
+    """DiffSync model for the UniFi controller itself, managing its sites' devices and wireless networks.
+
+    Location and Status are only set when the sync creates the Controller, and capabilities are only added to.
+    """
+
+    # Never delete the Controller: Devices of other sites, or another sync, may still use it.
+    model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
+
+    _model = Controller
+    _modelname = "controller"
+    _identifiers = ("name",)
+    _attributes = ("location__name", "status__name", "capabilities")
+    _children = {}
+
+    name: str
+    location__name: str
+    status__name: str
+    capabilities: Optional[List[str]] = None
+
+    @classmethod
+    def _get_queryset(cls):
+        """Load only this controller."""
+        return super()._get_queryset().filter(name=get_controller_name())
+
+
+class ControllerManagedDeviceGroupModel(NautobotModel):
+    """DiffSync model for a UniFi site's group of devices managed by the controller.
+
+    Like Locations, a group is identified by its site's short name, and named after the site.
+    """
+
+    # Never delete groups, like Locations: a site removed from `sites` keeps its group.
+    model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
+
+    _model = ControllerManagedDeviceGroup
+    _modelname = "devicegroup"
+    _identifiers = ("unifi_site", "unifi_controller")
+    _attributes = ("name", "controller__name", "capabilities")
+    _children = {}
+
+    unifi_site: Annotated[str, CustomFieldAnnotation(key="unifi_site")]
+    unifi_controller: Annotated[str, CustomFieldAnnotation(key="unifi_controller")]
+    name: str
+    controller__name: str
+    capabilities: Optional[List[str]] = None
+
+    @classmethod
+    def _get_queryset(cls):
+        """Load only groups synced from the selected sites of this controller."""
+        queryset = (
+            super()
+            ._get_queryset()
+            .filter(_custom_field_data__unifi_controller=get_controller_name())
+            .exclude(_custom_field_data__unifi_site__isnull=True)
+            .exclude(_custom_field_data__unifi_site=None)
+        )
+        selected = get_selected_sites()
+        if selected:
+            queryset = queryset.filter(Q(_custom_field_data__unifi_site__in=selected) | Q(name__in=selected))
+        return queryset
+
+
+class WirelessNetworkModel(NautobotModel):
+    """DiffSync model for UniFi WLANs, identified by SSID.
+
+    A WLAN with the same SSID in several sites is one Wireless Network, assigned to each site's group.
+    Passphrases are never synced.
+    """
+
+    _model = WirelessNetwork
+    _modelname = "wirelessnetwork"
+    _identifiers = ("name",)
+    _attributes = (
+        "ssid",
+        "mode",
+        "enabled",
+        "authentication",
+        "hidden",
+        "system_of_record",
+        "ssot_last_synchronized",
+        "unifi_controller",
+    )
+    _children = {}
+
+    name: str
+    ssid: str
+    mode: str
+    enabled: bool
+    authentication: str
+    hidden: bool
+
+    system_of_record: Annotated[Optional[str], CustomFieldAnnotation(name="system_of_record")] = None
+    ssot_last_synchronized: Annotated[Optional[str], CustomFieldAnnotation(name="ssot_last_synchronized")] = None
+    unifi_controller: Annotated[Optional[str], CustomFieldAnnotation(name="unifi_controller")] = None
+
+    @classmethod
+    def _get_queryset(cls):
+        """Load only Wireless Networks synced from this controller, and with `sites` set, used by a selected site.
+
+        A sync deletes every loaded Wireless Network UniFi no longer reports, and Wireless Networks have no
+        Location, so without the second filter a WLAN of a site left out of `sites` would be deleted.
+        """
+        queryset = (
+            super()
+            ._get_queryset()
+            .filter(
+                _custom_field_data__system_of_record=SYSTEM_OF_RECORD,
+                _custom_field_data__unifi_controller=get_controller_name(),
+            )
+        )
+        if get_selected_sites():
+            queryset = queryset.filter(
+                controller_managed_device_group_assignments__controller_managed_device_group__in=(
+                    ControllerManagedDeviceGroupModel._get_queryset()
+                )
+            ).distinct()
+        return queryset
+
+
+class WirelessNetworkAssignmentModel(NautobotModel):
+    """DiffSync model for the Wireless Networks of a UniFi site's group."""
+
+    _model = ControllerManagedDeviceGroupWirelessNetworkAssignment
+    _modelname = "wirelessnetworkassignment"
+    _identifiers = ("controller_managed_device_group__name", "wireless_network__name")
+    _attributes = ()
+    _children = {}
+
+    controller_managed_device_group__name: str
+    wireless_network__name: str
+
+    def delete(self):
+        """Delete the assignment, unless deleting its Wireless Network earlier in the sync already did."""
+        if not self._model.objects.filter(pk=self.pk).exists():
+            # Skip NautobotModel.delete, which fails on a missing object.
+            return super(NautobotModel, self).delete()
+        return super().delete()
+
+    @classmethod
+    def _get_queryset(cls):
+        """Load only the assignments of groups synced from the selected sites of this controller."""
+        return (
+            super()
+            ._get_queryset()
+            .filter(controller_managed_device_group__in=ControllerManagedDeviceGroupModel._get_queryset())
+        )
+
+
 class DeviceModel(NautobotModel):
     """DiffSync model for UniFi devices and clients.
 
@@ -140,9 +350,10 @@ class DeviceModel(NautobotModel):
     MAC addresses on Interfaces: the sync creates one Interface per Device to hold it, and the Nautobot
     adapter reads `mac_address` back from the Device's Interfaces (see `get_device_mac()`).
 
-    Role, Device Type, and Status are only set when the sync creates a Device, and serial only when UniFi
-    reports one: `UniFiAdapter.keep_nautobot_fields()` copies the Nautobot values over UniFi's before the
-    diff, so corrections made in Nautobot are never reverted.
+    Role, Device Type, and Status are only set when the sync creates a Device, and serial and Platform only
+    when UniFi reports one and Nautobot has none: `UniFiAdapter.keep_nautobot_fields()` copies the Nautobot
+    values over UniFi's before the diff, so corrections made in Nautobot are never reverted. Clients keep
+    the Platform, Software Version, and device group set in Nautobot.
     """
 
     _model = Device
@@ -156,6 +367,10 @@ class DeviceModel(NautobotModel):
         "device_type__model",
         "device_type__manufacturer__name",
         "status__name",
+        "platform__name",
+        "software_version__platform__name",
+        "software_version__version",
+        "controller_managed_device_group__name",
         "system_of_record",
         "ssot_last_synchronized",
         "unifi_controller",
@@ -170,6 +385,10 @@ class DeviceModel(NautobotModel):
     device_type__model: Optional[str] = None
     device_type__manufacturer__name: Optional[str] = None
     status__name: str
+    platform__name: Optional[str] = None
+    software_version__platform__name: Optional[str] = None
+    software_version__version: Optional[str] = None
+    controller_managed_device_group__name: Optional[str] = None
 
     system_of_record: Annotated[Optional[str], CustomFieldAnnotation(name="system_of_record")] = None
     ssot_last_synchronized: Annotated[Optional[str], CustomFieldAnnotation(name="ssot_last_synchronized")] = None

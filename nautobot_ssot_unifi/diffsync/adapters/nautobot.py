@@ -7,12 +7,19 @@ from nautobot.dcim.models import Device
 from nautobot_ssot.contrib import NautobotAdapter
 
 from nautobot_ssot_unifi.diffsync.models.base import (
+    TOP_LEVEL,
+    ControllerManagedDeviceGroupModel,
+    ControllerModel,
     DeviceModel,
     DeviceTypeModel,
     LocationModel,
     LocationTypeModel,
     ManufacturerModel,
+    PlatformModel,
     RoleModel,
+    SoftwareVersionModel,
+    WirelessNetworkAssignmentModel,
+    WirelessNetworkModel,
     get_device_mac,
 )
 
@@ -25,9 +32,15 @@ class UniFiNautobotAdapter(NautobotAdapter):
     manufacturer = ManufacturerModel
     devicetype = DeviceTypeModel
     role = RoleModel
+    platform = PlatformModel
+    softwareversion = SoftwareVersionModel
+    controller = ControllerModel
+    devicegroup = ControllerManagedDeviceGroupModel
+    wirelessnetwork = WirelessNetworkModel
+    wirelessnetworkassignment = WirelessNetworkAssignmentModel
     device = DeviceModel
 
-    top_level = ["locationtype", "location", "manufacturer", "devicetype", "role", "device"]
+    top_level = TOP_LEVEL
 
     def __init__(self, *args, unifi_macs=frozenset(), adopt_pks=(), sites=None, **kwargs):
         """Initialize the Nautobot adapter.

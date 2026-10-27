@@ -1,0 +1,31 @@
+[
+    {
+        "_id": "5b8d8b59d37233048927f69c",
+        "enabled": true,
+        "hide_ssid": false,
+        "name": "Home",
+        "security": "wpapsk",
+        "wpa3_support": true,
+        "wpa3_transition": false,
+        "wpa_mode": "wpa2",
+        "x_passphrase": "not-synced"
+    },
+    {
+        "_id": "61e4adcc2f24320023dd8a4a",
+        "enabled": false,
+        "hide_ssid": true,
+        "name": "Guest",
+        "security": "wpapsk",
+        "wpa3_support": true,
+        "wpa3_transition": true,
+        "wpa_mode": "wpa2",
+        "x_passphrase": "not-synced"
+    },
+    {
+        "_id": "66379c39c1e948692b16d693",
+        "enabled": true,
+        "hide_ssid": false,
+        "name": "Legacy",
+        "security": "wep"
+    }
+]

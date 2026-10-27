@@ -6,18 +6,21 @@ from nautobot.extras.choices import CustomFieldTypeChoices
 def nautobot_database_ready_callback(sender, *, apps, **kwargs):  # pylint: disable=unused-argument
     """Add the CustomFields this app syncs.
 
-    System of Record and Last Sync'd go on Device, Interface, and IPAddress; UniFi Controller on Device and
-    Location; UniFi Site on Location.
+    System of Record and Last Sync'd go on Device, Interface, IPAddress, and WirelessNetwork; UniFi Controller
+    on Device, Location, ControllerManagedDeviceGroup, and WirelessNetwork; UniFi Site on Location and
+    ControllerManagedDeviceGroup.
 
     Callback function triggered by the nautobot_database_ready signal when the Nautobot database is fully ready.
     """
     # pylint: disable=invalid-name, too-many-locals
     ContentType = apps.get_model("contenttypes", "ContentType")
     CustomField = apps.get_model("extras", "CustomField")
+    ControllerManagedDeviceGroup = apps.get_model("dcim", "ControllerManagedDeviceGroup")
     Device = apps.get_model("dcim", "Device")
     Location = apps.get_model("dcim", "Location")
     Interface = apps.get_model("dcim", "Interface")
     IPAddress = apps.get_model("ipam", "IPAddress")
+    WirelessNetwork = apps.get_model("wireless", "WirelessNetwork")
 
     sor_cf_dict = {
         "type": CustomFieldTypeChoices.TYPE_TEXT,
@@ -31,7 +34,7 @@ def nautobot_database_ready_callback(sender, *, apps, **kwargs):  # pylint: disa
         "label": "Last sync from System of Record",
     }
     sync_custom_field, _ = CustomField.objects.update_or_create(key=sync_cf_dict["key"], defaults=sync_cf_dict)
-    for model in [Device, Interface, IPAddress]:
+    for model in [Device, Interface, IPAddress, WirelessNetwork]:
         sor_custom_field.content_types.add(ContentType.objects.get_for_model(model))
         sync_custom_field.content_types.add(ContentType.objects.get_for_model(model))
     controller_cf_dict = {
@@ -42,12 +45,13 @@ def nautobot_database_ready_callback(sender, *, apps, **kwargs):  # pylint: disa
     controller_custom_field, _ = CustomField.objects.update_or_create(
         key=controller_cf_dict["key"], defaults=controller_cf_dict
     )
-    controller_custom_field.content_types.add(ContentType.objects.get_for_model(Device))
-    controller_custom_field.content_types.add(ContentType.objects.get_for_model(Location))
+    for model in [Device, Location, ControllerManagedDeviceGroup, WirelessNetwork]:
+        controller_custom_field.content_types.add(ContentType.objects.get_for_model(model))
     site_cf_dict = {
         "type": CustomFieldTypeChoices.TYPE_TEXT,
         "key": "unifi_site",
         "label": "UniFi Site",
     }
     site_custom_field, _ = CustomField.objects.update_or_create(key=site_cf_dict["key"], defaults=site_cf_dict)
-    site_custom_field.content_types.add(ContentType.objects.get_for_model(Location))
+    for model in [Location, ControllerManagedDeviceGroup]:
+        site_custom_field.content_types.add(ContentType.objects.get_for_model(model))

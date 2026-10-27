@@ -5,7 +5,13 @@ from nautobot_ssot.jobs.base import DataSource, DataTarget
 
 from nautobot_ssot_unifi.diffsync.adapters.nautobot import UniFiNautobotAdapter
 from nautobot_ssot_unifi.diffsync.adapters.unifi import UniFiAdapter
-from nautobot_ssot_unifi.utils.nautobot import find_devices_by_mac, find_unsynced_location, is_synced_device
+from nautobot_ssot_unifi.utils.nautobot import (
+    find_devices_by_mac,
+    find_unsynced_device_group,
+    find_unsynced_location,
+    find_unsynced_wireless_network,
+    is_synced_device,
+)
 from nautobot_ssot_unifi.utils.unifi import connect_controller, get_selected_sites
 
 name = "UniFi SSoT"  # pylint: disable=invalid-name
@@ -56,11 +62,12 @@ class UniFiDataSource(DataSource):
     def load_target_adapter(self):
         """Load data from Nautobot into DiffSync models.
 
-        Before loading, handle Locations and Devices that already exist in Nautobot but were not synced
+        Before loading, handle Locations, device groups, Wireless Networks, and Devices that already exist in Nautobot but were not synced
         from this controller. After loading, keep Nautobot's values for the fields the sync only sets on
         create, and drop the shared objects nothing needs any more.
         """
         self.handle_existing_locations()
+        self.handle_existing_wireless()
         unifi_macs = {device.mac_address for device in self.source_adapter.get_all("device")}
         adopt_pks = self.handle_existing_devices(unifi_macs)
         self.target_adapter = UniFiNautobotAdapter(
@@ -77,7 +84,8 @@ class UniFiDataSource(DataSource):
     def handle_existing_locations(self):
         """Use an existing Location named like a UniFi site instead of creating a second one.
 
-        The sync places the site's Devices in it, but never changes the Location itself.
+        The sync places the site's Devices in it, but never changes the Location itself, except to add the
+        Device and Controller content types to its Location Type.
         """
         for location in list(self.source_adapter.get_all("location")):
             existing = find_unsynced_location(location.name, location.unifi_site)
@@ -90,6 +98,38 @@ class UniFiDataSource(DataSource):
                     extra={"object": existing},
                 )
                 self.source_adapter.remove(location)
+                self.source_adapter.load_location_type(existing.location_type.name, required=True)
+
+    def handle_existing_wireless(self):
+        """Use existing device groups and Wireless Networks named like UniFi ones instead of creating duplicates.
+
+        Like existing Locations, the sync places the site's Devices in an existing group, and assigns its
+        group to an existing Wireless Network, but never changes either.
+        """
+        for group in list(self.source_adapter.get_all("devicegroup")):
+            existing = find_unsynced_device_group(group.name, group.unifi_site)
+            if existing:
+                self.logger.warning(
+                    "Controller managed device group %s already exists and was not synced from UniFi; placing "
+                    "site %s's Devices in it without changing the group or its Wireless Networks.",
+                    existing.name,
+                    group.unifi_site,
+                    extra={"object": existing},
+                )
+                self.source_adapter.remove(group)
+                for assignment in list(self.source_adapter.get_all("wirelessnetworkassignment")):
+                    if assignment.controller_managed_device_group__name == group.name:
+                        self.source_adapter.remove(assignment)
+        for wireless_network in list(self.source_adapter.get_all("wirelessnetwork")):
+            existing = find_unsynced_wireless_network(wireless_network.name)
+            if existing:
+                self.logger.warning(
+                    "Wireless Network %s already exists and was not synced from UniFi; assigning it to UniFi "
+                    "sites without changing it.",
+                    existing.name,
+                    extra={"object": existing},
+                )
+                self.source_adapter.remove(wireless_network)
 
     def handle_existing_devices(self, unifi_macs) -> list:
         """Apply the `existing_devices` choice to Devices that share a MAC with UniFi but are not synced from here.
