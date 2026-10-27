@@ -183,6 +183,7 @@ class TestUniFiNautobotAdapterTestCase(TransactionTestCase):
 
     def test_cable_create_move_and_conflict(self):
         """Cables are created with their Interfaces, move with the client, and never replace a hand-made Cable."""
+        Role.objects.get_or_create(name="Client")[0].content_types.add(ContentType.objects.get_for_model(Device))
         DeviceModel.create(
             adapter=self.nautobot,
             ids={"mac_address": "00:11:22:33:44:aa"},

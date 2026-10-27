@@ -263,7 +263,8 @@ class TestUniFiAdapterTestCase(TransactionTestCase):
 
     def test_keep_nautobot_fields_platform_and_content_types(self):
         """Devices keep Nautobot's Platform; content types only grow; unused Platforms and versions are dropped."""
-        self.unifi.load_location_type("Site")
+        # Required, as for an existing Location used as is, so prune_unused() keeps it without a synced Location.
+        self.unifi.load_location_type("Site", required=True)
         self.unifi.load_devices(self.unifi.get_unifi_devices(SITE_FIXTURE[0]))
         target = UniFiAdapter(job=self.job, sync=None, client=MagicMock())
         target.add(target.locationtype(name="Site", content_types=[{"app_label": "dcim", "model": "rack"}]))
