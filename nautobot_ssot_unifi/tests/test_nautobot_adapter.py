@@ -16,7 +16,7 @@ from nautobot.dcim.models import (
 )
 from nautobot.extras.choices import CustomFieldTypeChoices
 from nautobot.extras.models import CustomField, JobResult, Role, Status
-from nautobot.ipam.models import VLAN, IPAddress, IPAddressToInterface, Prefix, VLANGroup
+from nautobot.ipam.models import VLAN, IPAddress, IPAddressToInterface, Namespace, Prefix, VLANGroup
 from nautobot.wireless.models import ControllerManagedDeviceGroupWirelessNetworkAssignment, WirelessNetwork
 
 from nautobot_ssot_unifi.constants import SYSTEM_OF_RECORD
@@ -69,6 +69,8 @@ class TestUniFiNautobotAdapterTestCase(TransactionTestCase):
     def setUp(self):
         """Create Locations and Devices from this controller, another controller, another System of Record, and none."""
         self._create_custom_fields()
+        # TransactionTestCase flushes the Global Namespace Nautobot's migrations create.
+        Namespace.objects.get_or_create(name="Global")
         device_ct = ContentType.objects.get_for_model(Device)
 
         status, _ = Status.objects.get_or_create(name="Active")
